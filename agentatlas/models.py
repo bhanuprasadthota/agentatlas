@@ -12,6 +12,7 @@ class SiteSchema:
     source: str
     tokens_used: int
     message: str
+    recovery_state: str | None = None
 
 
 @dataclass
@@ -56,6 +57,7 @@ class ValidationReport:
     fingerprint_match: bool | None = None
     locator_results: list[LocatorResolution] = field(default_factory=list)
     message: str = ""
+    recovery_state: str | None = None
 
 
 @dataclass

@@ -45,7 +45,9 @@ def test_get_schema_uses_hosted_api(monkeypatch):
     monkeypatch.setattr("agentatlas.client.urlopen", fake_urlopen)
 
     atlas = Atlas(api_url="https://api.agentatlas.dev", api_key="sdk-secret", use_api=True, api_timeout=9.5)
-    schema = __import__("asyncio").run(atlas.get_schema(site="example.com", url="https://example.com"))
+    schema = __import__("asyncio").run(
+        atlas.get_schema(site="example.com", url="https://example.com", max_learn_seconds=12.5)
+    )
 
     assert captured["url"] == "https://api.agentatlas.dev/v1/schema/resolve"
     assert captured["body"] == {
@@ -54,6 +56,7 @@ def test_get_schema_uses_hosted_api(monkeypatch):
         "task_key": "generic_extract",
         "variant_key": "desktop_enUS_loggedout",
         "registry_scope": "auto",
+        "max_learn_seconds": 12.5,
     }
     assert captured["api_key"] == "sdk-secret"
     assert captured["timeout"] == 9.5

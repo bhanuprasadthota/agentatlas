@@ -1,4 +1,9 @@
+import copy
+import os
 import re
+import threading
+import time
+import uuid
 from urllib.parse import urlparse
 
 from agentatlas.models import PlaybookRecord, ValidationReport
@@ -17,8 +22,193 @@ from agentatlas.registry_review import AtlasReviewMixin
 
 
 class AtlasRegistry(AtlasReviewMixin, AtlasBenchmarkMixin, AtlasQualityMixin):
+    _recovery_lock = threading.Lock()
+    _recovery_leases: dict[str, dict] = {}
+
     def __init__(self, supabase_client):
         self.sb = supabase_client
+        self._cache_ttl_seconds = int(os.getenv("AGENTATLAS_REGISTRY_CACHE_TTL_SECONDS", "300"))
+        self._cache = {
+            "schema": {},
+            "playbook": {},
+            "snapshot": {},
+        }
+        self._read_failure_count = 0
+        self._read_failure_threshold = int(os.getenv("AGENTATLAS_REGISTRY_FAILURE_THRESHOLD", "3"))
+        self._read_cooldown_seconds = int(os.getenv("AGENTATLAS_REGISTRY_COOLDOWN_SECONDS", "30"))
+        self._read_circuit_open_until = 0.0
+        self._last_read_degraded = False
+
+    def read_degraded(self) -> bool:
+        return self._last_read_degraded
+
+    def _cache_lookup(self, bucket: str, key: str, allow_stale: bool = False):
+        entry = self._cache.get(bucket, {}).get(key)
+        if not entry:
+            return None
+        if allow_stale or entry["expires_at"] > time.time():
+            return copy.deepcopy(entry["value"])
+        self._cache[bucket].pop(key, None)
+        return None
+
+    def _cache_store(self, bucket: str, key: str, value):
+        self._cache.setdefault(bucket, {})[key] = {
+            "value": copy.deepcopy(value),
+            "expires_at": time.time() + self._cache_ttl_seconds,
+        }
+
+    def _read_cache_key(self, *parts) -> str:
+        return "::".join("" if part is None else str(part) for part in parts)
+
+    def _read_circuit_open(self) -> bool:
+        return self._read_circuit_open_until > time.time()
+
+    def _mark_read_success(self) -> None:
+        self._read_failure_count = 0
+        self._read_circuit_open_until = 0.0
+        self._last_read_degraded = False
+
+    def _mark_read_failure(self) -> None:
+        self._read_failure_count += 1
+        self._last_read_degraded = True
+        if self._read_failure_count >= self._read_failure_threshold:
+            self._read_circuit_open_until = time.time() + self._read_cooldown_seconds
+
+    def _run_read(self, bucket: str, key: str, loader):
+        self._last_read_degraded = False
+        if self._read_circuit_open():
+            cached = self._cache_lookup(bucket, key, allow_stale=True)
+            self._last_read_degraded = True
+            return cached
+        try:
+            value = loader()
+            self._mark_read_success()
+            if value is not None:
+                self._cache_store(bucket, key, value)
+            return copy.deepcopy(value)
+        except Exception:
+            self._mark_read_failure()
+            return self._cache_lookup(bucket, key, allow_stale=True)
+
+    @classmethod
+    def _recovery_key(
+        cls,
+        site: str,
+        route_key: str,
+        task_key: str,
+        variant_key: str,
+        tenant_id: str | None,
+        registry_scope: str,
+    ) -> str:
+        return "::".join(
+            [
+                site,
+                route_key,
+                task_key,
+                variant_key,
+                tenant_id or "public",
+                registry_scope or DEFAULT_REGISTRY_SCOPE,
+            ]
+        )
+
+    @classmethod
+    def start_recovery(
+        cls,
+        *,
+        site: str,
+        route_key: str,
+        task_key: str,
+        variant_key: str,
+        tenant_id: str | None,
+        registry_scope: str,
+        reason: str,
+        ttl_seconds: int = 300,
+    ) -> tuple[bool, dict]:
+        key = cls._recovery_key(site, route_key, task_key, variant_key, tenant_id, registry_scope)
+        now = time.time()
+        with cls._recovery_lock:
+            existing = cls._recovery_leases.get(key)
+            if existing and existing.get("expires_at", 0) > now:
+                return False, dict(existing)
+            lease = {
+                "key": key,
+                "owner": uuid.uuid4().hex,
+                "reason": reason,
+                "started_at": now,
+                "expires_at": now + ttl_seconds,
+            }
+            cls._recovery_leases[key] = lease
+            return True, dict(lease)
+
+    @classmethod
+    def finish_recovery(cls, lease: dict | None) -> None:
+        if not lease:
+            return
+        key = lease.get("key")
+        owner = lease.get("owner")
+        if not key or not owner:
+            return
+        with cls._recovery_lock:
+            current = cls._recovery_leases.get(key)
+            if current and current.get("owner") == owner:
+                cls._recovery_leases.pop(key, None)
+
+    def get_route_playbook_snapshot(
+        self,
+        site: str,
+        url: str,
+        task_key: str = DEFAULT_TASK_KEY,
+        variant_key: str = DEFAULT_VARIANT_KEY,
+        tenant_id: str | None = None,
+        registry_scope: str = DEFAULT_REGISTRY_SCOPE,
+    ) -> dict | None:
+        cache_key = self._read_cache_key(site, url, task_key, variant_key, tenant_id, registry_scope)
+
+        def loader():
+            route = self._find_route(site, url)
+            if not route:
+                return None
+            task_rows = (
+                self.sb.table("tasks")
+                .select("id")
+                .eq("task_key", task_key)
+                .limit(1)
+                .execute()
+                .data
+            )
+            if not task_rows:
+                return {"route_key": route["route_key"], "status": None, "payload": {}}
+            playbooks = (
+                self.sb.table("playbooks")
+                .select("id, payload, confidence, variant_key, version, status")
+                .eq("site_id", route["site_id"])
+                .eq("route_id", route["id"])
+                .eq("task_id", task_rows[0]["id"])
+                .eq("variant_key", variant_key)
+                .order("version", desc=True)
+                .limit(25)
+                .execute()
+                .data
+            )
+            if not playbooks:
+                return {"route_key": route["route_key"], "status": None, "payload": {}}
+            scoped = self._filter_playbooks_by_scope(
+                playbooks=playbooks,
+                tenant_id=tenant_id,
+                registry_scope=registry_scope,
+            )
+            if not scoped:
+                return {"route_key": route["route_key"], "status": None, "payload": {}}
+            latest = scoped[0]
+            return {
+                "route_key": route["route_key"],
+                "status": latest.get("status"),
+                "payload": latest.get("payload") or {},
+                "version": latest.get("version"),
+                "confidence": latest.get("confidence"),
+            }
+
+        return self._run_read("snapshot", cache_key, loader)
 
     def fetch_schema(
         self,
@@ -28,55 +218,60 @@ class AtlasRegistry(AtlasReviewMixin, AtlasBenchmarkMixin, AtlasQualityMixin):
         tenant_id: str | None = None,
         registry_scope: str = DEFAULT_REGISTRY_SCOPE,
     ) -> dict | None:
-        route = self._find_route(site, url)
-        if not route:
-            return None
-        playbooks = (
-            self.sb.table("playbooks")
-            .select("payload, confidence, variant_key, version")
-            .eq("site_id", route["site_id"])
-            .eq("route_id", route["id"])
-            .eq("status", "active")
-            .order("confidence", desc=True)
-            .limit(25)
-            .execute()
-            .data
-        )
-        if not playbooks:
-            return None
-        scoped_playbooks = self._filter_playbooks_by_scope(
-            playbooks=playbooks,
-            tenant_id=tenant_id,
-            registry_scope=registry_scope,
-        )
-        ranked_playbooks = self._resolve_scope_conflicts(
-            playbooks=scoped_playbooks,
-            variant_key=variant_key,
-            tenant_id=tenant_id,
-            registry_scope=registry_scope,
-        )
-        for playbook in ranked_playbooks:
-            payload = playbook.get("payload") or {}
-            quality = self._compute_quality_summary(
-                confidence=playbook.get("confidence", 0.0),
-                validation=payload.get("validation", {}),
-                telemetry=payload.get("telemetry", {}),
-                promotion=payload.get("promotion", {}),
-                registry=payload.get("registry", {}),
+        cache_key = self._read_cache_key(site, url, variant_key, tenant_id, registry_scope)
+
+        def loader():
+            route = self._find_route(site, url)
+            if not route:
+                return None
+            playbooks = (
+                self.sb.table("playbooks")
+                .select("payload, confidence, variant_key, version")
+                .eq("site_id", route["site_id"])
+                .eq("route_id", route["id"])
+                .eq("status", "active")
+                .order("confidence", desc=True)
+                .limit(25)
+                .execute()
+                .data
             )
-            if not quality.get("serveable", True):
-                continue
-            elements = self.build_elements(payload)
-            if not elements:
-                continue
-            return {
-                "route_key": route["route_key"],
-                "confidence": playbook["confidence"],
-                "elements": elements,
-                "quality": quality,
-                "variant_key": playbook.get("variant_key"),
-            }
-        return None
+            if not playbooks:
+                return None
+            scoped_playbooks = self._filter_playbooks_by_scope(
+                playbooks=playbooks,
+                tenant_id=tenant_id,
+                registry_scope=registry_scope,
+            )
+            ranked_playbooks = self._resolve_scope_conflicts(
+                playbooks=scoped_playbooks,
+                variant_key=variant_key,
+                tenant_id=tenant_id,
+                registry_scope=registry_scope,
+            )
+            for playbook in ranked_playbooks:
+                payload = playbook.get("payload") or {}
+                quality = self._compute_quality_summary(
+                    confidence=playbook.get("confidence", 0.0),
+                    validation=payload.get("validation", {}),
+                    telemetry=payload.get("telemetry", {}),
+                    promotion=payload.get("promotion", {}),
+                    registry=payload.get("registry", {}),
+                )
+                if not quality.get("serveable", True):
+                    continue
+                elements = self.build_elements(payload)
+                if not elements:
+                    continue
+                return {
+                    "route_key": route["route_key"],
+                    "confidence": playbook["confidence"],
+                    "elements": elements,
+                    "quality": quality,
+                    "variant_key": playbook.get("variant_key"),
+                }
+            return None
+
+        return self._run_read("schema", cache_key, loader)
 
     def get_playbook(
         self,
@@ -87,87 +282,92 @@ class AtlasRegistry(AtlasReviewMixin, AtlasBenchmarkMixin, AtlasQualityMixin):
         tenant_id: str | None = None,
         registry_scope: str = DEFAULT_REGISTRY_SCOPE,
     ) -> PlaybookRecord | None:
-        route = self._find_route(site, url)
-        if not route:
-            return None
-        task_rows = (
-            self.sb.table("tasks")
-            .select("id")
-            .eq("task_key", task_key)
-            .limit(1)
-            .execute()
-            .data
-        )
-        if not task_rows:
-            return None
-        playbooks = (
-            self.sb.table("playbooks")
-            .select("payload, confidence, variant_key, version")
-            .eq("site_id", route["site_id"])
-            .eq("route_id", route["id"])
-            .eq("task_id", task_rows[0]["id"])
-            .eq("status", "active")
-            .order("version", desc=True)
-            .limit(25)
-            .execute()
-            .data
-        )
-        if not playbooks:
-            return None
-        scoped_playbooks = self._filter_playbooks_by_scope(
-            playbooks=playbooks,
-            tenant_id=tenant_id,
-            registry_scope=registry_scope,
-        )
-        ranked_playbooks = self._resolve_scope_conflicts(
-            playbooks=scoped_playbooks,
-            variant_key=variant_key,
-            tenant_id=tenant_id,
-            registry_scope=registry_scope,
-        )
-        if not ranked_playbooks:
-            return None
-        selected = ranked_playbooks[0]
-        payload = selected["payload"] or {}
-        validation = self._get_latest_validation_summary(
-            playbook_payload=payload,
-            site_id=route["site_id"],
-            route_id=route["id"],
-            task_id=task_rows[0]["id"],
-            variant_key=selected.get("variant_key", variant_key),
-        )
-        quality = self._compute_quality_summary(
-            confidence=selected["confidence"],
-            validation=validation,
-            telemetry=payload.get("telemetry", {}),
-            promotion=payload.get("promotion", {}),
-            registry=payload.get("registry", {}),
-        )
-        payload["quality"] = quality
-        registry_meta = payload.get("registry", {})
-        promotion = payload.get("promotion", {})
-        return PlaybookRecord(
-            site=site,
-            url=url,
-            route_key=route["route_key"],
-            task_key=task_key,
-            variant_key=selected.get("variant_key", variant_key),
-            confidence=selected["confidence"],
-            elements=self.build_elements(payload),
-            source=payload.get("fingerprint_source", "registry"),
-            schema_version=selected.get("version", 1),
-            fingerprint=(payload.get("fingerprint") or {}).get("value"),
-            last_validated_at=validation.get("last_validated_at"),
-            success_rate=validation.get("success_rate"),
-            validation_count=validation.get("validation_count", 0),
-            trust_score=quality.get("trust_score"),
-            quality_status=quality.get("quality_status", "candidate"),
-            serveable=quality.get("serveable", True),
-            registry_scope=registry_meta.get("scope", "public"),
-            tenant_id=registry_meta.get("tenant_id"),
-            review_status=promotion.get("review_status", "approved"),
-            metadata=payload,
-        )
+        cache_key = self._read_cache_key(site, url, task_key, variant_key, tenant_id, registry_scope)
+
+        def loader():
+            route = self._find_route(site, url)
+            if not route:
+                return None
+            task_rows = (
+                self.sb.table("tasks")
+                .select("id")
+                .eq("task_key", task_key)
+                .limit(1)
+                .execute()
+                .data
+            )
+            if not task_rows:
+                return None
+            playbooks = (
+                self.sb.table("playbooks")
+                .select("payload, confidence, variant_key, version")
+                .eq("site_id", route["site_id"])
+                .eq("route_id", route["id"])
+                .eq("task_id", task_rows[0]["id"])
+                .eq("status", "active")
+                .order("version", desc=True)
+                .limit(25)
+                .execute()
+                .data
+            )
+            if not playbooks:
+                return None
+            scoped_playbooks = self._filter_playbooks_by_scope(
+                playbooks=playbooks,
+                tenant_id=tenant_id,
+                registry_scope=registry_scope,
+            )
+            ranked_playbooks = self._resolve_scope_conflicts(
+                playbooks=scoped_playbooks,
+                variant_key=variant_key,
+                tenant_id=tenant_id,
+                registry_scope=registry_scope,
+            )
+            if not ranked_playbooks:
+                return None
+            selected = ranked_playbooks[0]
+            payload = selected["payload"] or {}
+            validation = self._get_latest_validation_summary(
+                playbook_payload=payload,
+                site_id=route["site_id"],
+                route_id=route["id"],
+                task_id=task_rows[0]["id"],
+                variant_key=selected.get("variant_key", variant_key),
+            )
+            quality = self._compute_quality_summary(
+                confidence=selected["confidence"],
+                validation=validation,
+                telemetry=payload.get("telemetry", {}),
+                promotion=payload.get("promotion", {}),
+                registry=payload.get("registry", {}),
+            )
+            payload["quality"] = quality
+            registry_meta = payload.get("registry", {})
+            promotion = payload.get("promotion", {})
+            return PlaybookRecord(
+                site=site,
+                url=url,
+                route_key=route["route_key"],
+                task_key=task_key,
+                variant_key=selected.get("variant_key", variant_key),
+                confidence=selected["confidence"],
+                elements=self.build_elements(payload),
+                source=payload.get("fingerprint_source", "registry"),
+                schema_version=selected.get("version", 1),
+                fingerprint=(payload.get("fingerprint") or {}).get("value"),
+                last_validated_at=validation.get("last_validated_at"),
+                success_rate=validation.get("success_rate"),
+                validation_count=validation.get("validation_count", 0),
+                trust_score=quality.get("trust_score"),
+                quality_status=quality.get("quality_status", "candidate"),
+                serveable=quality.get("serveable", True),
+                registry_scope=registry_meta.get("scope", "public"),
+                tenant_id=registry_meta.get("tenant_id"),
+                review_status=promotion.get("review_status", "approved"),
+                metadata=payload,
+            )
+
+        return self._run_read("playbook", cache_key, loader)
 
     def resolve_locator(
         self,

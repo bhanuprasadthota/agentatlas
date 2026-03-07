@@ -26,12 +26,20 @@ class AtlasHostedClientMixin:
                 "Use a direct Atlas instance or call the hosted API endpoint explicitly."
             )
 
-    def _get_schema_via_api(self, site: str, url: str, variant_key: str, registry_scope: str) -> SiteSchema:
+    def _get_schema_via_api(
+        self,
+        site: str,
+        url: str,
+        variant_key: str,
+        registry_scope: str,
+        max_learn_seconds: float | None = None,
+    ) -> SiteSchema:
         return self._resolve_schema_via_api(
             site=site,
             url=url,
             variant_key=variant_key,
             registry_scope=registry_scope,
+            max_learn_seconds=max_learn_seconds,
         ).schema
 
     def _resolve_schema_via_api(
@@ -41,17 +49,21 @@ class AtlasHostedClientMixin:
         task_key: str = "generic_extract",
         variant_key: str = "desktop_enUS_loggedout",
         registry_scope: str = "auto",
+        max_learn_seconds: float | None = None,
     ) -> ResolveSchemaResponse:
+        payload = {
+            "site": site,
+            "url": url,
+            "task_key": task_key,
+            "variant_key": variant_key,
+            "registry_scope": registry_scope,
+        }
+        if max_learn_seconds is not None:
+            payload["max_learn_seconds"] = max_learn_seconds
         body = self._request_api_json(
             method="POST",
             path="/v1/schema/resolve",
-            payload={
-                "site": site,
-                "url": url,
-                "task_key": task_key,
-                "variant_key": variant_key,
-                "registry_scope": registry_scope,
-            },
+            payload=payload,
         )
         schema_payload = body.get("schema")
         if not schema_payload:

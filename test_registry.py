@@ -42,6 +42,63 @@ class _FakeSupabase:
         raise AssertionError(f"Unexpected table requested: {name}")
 
 
+class _SequentialQuery:
+    def __init__(self, provider):
+        self.provider = provider
+
+    def select(self, *_args, **_kwargs):
+        return self
+
+    def eq(self, *_args, **_kwargs):
+        return self
+
+    def order(self, *_args, **_kwargs):
+        return self
+
+    def limit(self, *_args, **_kwargs):
+        return self
+
+    def execute(self):
+        value = self.provider()
+        if isinstance(value, Exception):
+            raise value
+        return _FakeResult(value)
+
+
+class _ReadFallbackSupabase:
+    def __init__(self):
+        self.fail_playbooks = False
+
+    def table(self, name):
+        if name == "sites":
+            return _SequentialQuery(lambda: [{"id": 1}])
+        if name == "page_routes":
+            return _SequentialQuery(lambda: [{"id": 2, "route_key": "home", "path_pattern": r"^/$"}])
+        if name == "playbooks":
+            return _SequentialQuery(
+                lambda: RuntimeError("supabase unavailable")
+                if self.fail_playbooks
+                else [
+                    {
+                        "payload": {
+                            "locators": {
+                                "hero": [
+                                    {"type": "role", "value": "heading+Example", "priority": 1, "confidence": 0.9},
+                                ]
+                            },
+                            "validation": {"validation_count": 1, "success_rate": 1.0, "status": "healthy"},
+                            "registry": {"scope": "public", "tenant_id": None},
+                            "promotion": {"review_status": "approved"},
+                        },
+                        "confidence": 0.9,
+                        "variant_key": "desktop_enUS_loggedout",
+                        "version": 1,
+                    }
+                ]
+            )
+        raise AssertionError(f"Unexpected table requested: {name}")
+
+
 class _PlaybookFetchSupabase:
     def __init__(self, playbook_rows):
         self.playbook_rows = playbook_rows
@@ -292,6 +349,22 @@ class RegistryHelpersTest(unittest.TestCase):
         self.assertIsNotNone(schema)
         self.assertEqual(schema["elements"]["title"]["selector"], "heading+Good")
         self.assertEqual(schema["quality"]["quality_status"], "verified")
+
+    def test_fetch_schema_uses_cached_value_when_registry_read_fails(self):
+        supabase = _ReadFallbackSupabase()
+        registry = AtlasRegistry(supabase)
+
+        first = registry.fetch_schema("example.com", "https://example.com/")
+
+        self.assertIsNotNone(first)
+        self.assertFalse(registry.read_degraded())
+
+        supabase.fail_playbooks = True
+        second = registry.fetch_schema("example.com", "https://example.com/")
+
+        self.assertIsNotNone(second)
+        self.assertEqual(second["elements"]["hero"]["selector"], "heading+Example")
+        self.assertTrue(registry.read_degraded())
 
     def test_scope_filter_prefers_private_then_public(self):
         playbooks = [
