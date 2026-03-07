@@ -204,6 +204,7 @@ def test_api_endpoints():
     client = TestClient(app)
 
     assert client.get("/health").json()["status"] == "ok"
+    assert client.get("/version").json()["api_version"] == "v1"
     assert client.post("/v1/schema/resolve", json={"site": "example.com", "url": "https://example.com"}).json()["schema"]["route_key"] == "home"
     assert client.post("/v1/locator/resolve", json={"site": "example.com", "url": "https://example.com", "element_name": "hero"}).json()["locator"]["selector"] == "heading+Example"
     assert client.post("/v1/locator/resolve", json={"site": "example.com", "url": "https://example.com", "element_name": "missing"}).status_code == 404

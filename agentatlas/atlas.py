@@ -1,5 +1,6 @@
 """Main AgentAtlas SDK facade."""
 
+import asyncio
 import logging
 import os
 
@@ -16,6 +17,7 @@ from agentatlas.registry import (
     DEFAULT_VARIANT_KEY,
 )
 from agentatlas.supabase_client import get_supabase
+from agentatlas.versioning import warn_deprecated
 
 load_dotenv()
 
@@ -28,6 +30,7 @@ class Atlas(AtlasHostedClientMixin, AtlasBrowserRuntimeMixin):
         tenant_id: str | None = None,
         use_api: bool | None = None,
         api_timeout: float = 20.0,
+        learn_timeout_seconds: float | None = None,
         registry_scope: str = DEFAULT_REGISTRY_SCOPE,
         logger: logging.Logger | None = None,
     ):
@@ -35,6 +38,11 @@ class Atlas(AtlasHostedClientMixin, AtlasBrowserRuntimeMixin):
         self.api_key = api_key or os.getenv("AGENTATLAS_API_KEY")
         self.tenant_id = tenant_id or os.getenv("AGENTATLAS_TENANT_ID")
         self.api_timeout = api_timeout
+        self.learn_timeout_seconds = (
+            float(os.getenv("AGENTATLAS_LEARN_TIMEOUT_SECONDS", "25"))
+            if learn_timeout_seconds is None
+            else float(learn_timeout_seconds)
+        )
         self.registry_scope = registry_scope or os.getenv("AGENTATLAS_REGISTRY_SCOPE", DEFAULT_REGISTRY_SCOPE)
         self.api_url = resolved_api_url.rstrip("/") if resolved_api_url else None
         self.use_api = bool(self.api_url) if use_api is None else use_api
@@ -58,6 +66,7 @@ class Atlas(AtlasHostedClientMixin, AtlasBrowserRuntimeMixin):
         variant_key: str | None = None,
         tenant_id: str | None = None,
         registry_scope: str | None = None,
+        max_learn_seconds: float | None = None,
     ) -> SiteSchema:
         resolved_variant_key = self.infer_variant_key(url=url, variant_key=variant_key)
         resolved_tenant_id = self.tenant_id if tenant_id is None else tenant_id
@@ -68,6 +77,7 @@ class Atlas(AtlasHostedClientMixin, AtlasBrowserRuntimeMixin):
                 url=url,
                 variant_key=resolved_variant_key,
                 registry_scope=resolved_registry_scope,
+                max_learn_seconds=max_learn_seconds,
             )
 
         self.logger.info("agentatlas_schema_lookup", extra={"site": site, "url": url, "variant_key": resolved_variant_key})
@@ -92,53 +102,129 @@ class Atlas(AtlasHostedClientMixin, AtlasBrowserRuntimeMixin):
                 message="Schema found in registry. No LLM used.",
             )
 
-        self.logger.info("agentatlas_schema_cold_start", extra={"site": site, "url": url, "variant_key": resolved_variant_key})
-        learned = await self._learn_site(site, url)
-        if not learned:
-            return SiteSchema(
-                site=site,
-                url=url,
-                route_key="unknown",
-                status="not_found",
-                confidence=0.0,
-                elements={},
-                source="not_found",
-                tokens_used=0,
-                message="Could not learn site. Page may be blocked or empty.",
-            )
-        learned = await self._admit_learned_schema(url, learned)
-        if not learned or not learned.get("elements"):
-            return SiteSchema(
-                site=site,
-                url=url,
-                route_key=learned["route_key"] if learned else "unknown",
-                status="not_found",
-                confidence=0.0,
-                elements={},
-                source="not_found",
-                tokens_used=learned.get("tokens_used", 0) if learned else 0,
-                message="Learned schema did not produce any actionable locators.",
-            )
-        self.registry.save_schema(
-            site,
-            url,
-            learned,
-            variant_key=resolved_variant_key,
-            tenant_id=resolved_tenant_id,
-            registry_scope="private" if resolved_registry_scope == "private" else "public",
-        )
-        self.logger.info("agentatlas_schema_saved", extra={"site": site, "url": url, "variant_key": resolved_variant_key})
-        return SiteSchema(
+        snapshot = self.registry.get_route_playbook_snapshot(
             site=site,
             url=url,
-            route_key=learned["route_key"],
-            status="learned",
-            confidence=0.6,
-            elements=learned["elements"],
-            source="llm_learned",
-            tokens_used=learned["tokens_used"],
-            message=f"Schema learned and saved. Tokens used: {learned['tokens_used']}.",
+            task_key=DEFAULT_TASK_KEY,
+            variant_key=resolved_variant_key,
+            tenant_id=resolved_tenant_id,
+            registry_scope=resolved_registry_scope,
         )
+        route_key = (snapshot or {}).get("route_key") or "unknown"
+        if getattr(self.registry, "read_degraded", lambda: False)():
+            return SiteSchema(
+                site=site,
+                url=url,
+                route_key=route_key,
+                status="registry_unavailable",
+                confidence=0.0,
+                elements={},
+                source="registry_unavailable",
+                tokens_used=0,
+                message="Registry read degraded. Skipping cold start until backing store recovers.",
+                recovery_state="degraded_read",
+            )
+        recovery_reason = "stale" if (snapshot or {}).get("status") == "stale" else "cold_start"
+        acquired, lease = self.registry.start_recovery(
+            site=site,
+            route_key=route_key,
+            task_key=DEFAULT_TASK_KEY,
+            variant_key=resolved_variant_key,
+            tenant_id=resolved_tenant_id,
+            registry_scope=resolved_registry_scope,
+            reason=recovery_reason,
+        )
+        if not acquired:
+            recovery_state = "relearning" if lease.get("reason") == "stale" else "learning"
+            return SiteSchema(
+                site=site,
+                url=url,
+                route_key=route_key,
+                status="recovering",
+                confidence=0.0,
+                elements={},
+                source="recovery_pending",
+                tokens_used=0,
+                message=(
+                    "Schema recovery already in progress for this route."
+                    if recovery_state == "relearning"
+                    else "Cold-start learning already in progress for this route."
+                ),
+                recovery_state=recovery_state,
+            )
+
+        self.logger.info("agentatlas_schema_cold_start", extra={"site": site, "url": url, "variant_key": resolved_variant_key})
+        try:
+            learn_budget = self.learn_timeout_seconds if max_learn_seconds is None else float(max_learn_seconds)
+            try:
+                learned = await asyncio.wait_for(self._learn_site(site, url), timeout=learn_budget)
+            except asyncio.TimeoutError:
+                self.logger.warning(
+                    "agentatlas_schema_learn_timeout",
+                    extra={"site": site, "url": url, "variant_key": resolved_variant_key, "timeout_seconds": learn_budget},
+                )
+                return SiteSchema(
+                    site=site,
+                    url=url,
+                    route_key=route_key,
+                    status="timeout",
+                    confidence=0.0,
+                    elements={},
+                    source="timeout",
+                    tokens_used=0,
+                    message=f"Schema learning timed out after {learn_budget:.1f}s.",
+                    recovery_state="timed_out",
+                )
+            if not learned:
+                return SiteSchema(
+                    site=site,
+                    url=url,
+                    route_key=route_key,
+                    status="not_found",
+                    confidence=0.0,
+                    elements={},
+                    source="not_found",
+                    tokens_used=0,
+                    message="Could not learn site. Page may be blocked or empty.",
+                    recovery_state="failed",
+                )
+            learned = await self._admit_learned_schema(url, learned)
+            if not learned or not learned.get("elements"):
+                return SiteSchema(
+                    site=site,
+                    url=url,
+                    route_key=learned["route_key"] if learned else route_key,
+                    status="not_found",
+                    confidence=0.0,
+                    elements={},
+                    source="not_found",
+                    tokens_used=learned.get("tokens_used", 0) if learned else 0,
+                    message="Learned schema did not produce any actionable locators.",
+                    recovery_state="failed",
+                )
+            self.registry.save_schema(
+                site,
+                url,
+                learned,
+                variant_key=resolved_variant_key,
+                tenant_id=resolved_tenant_id,
+                registry_scope="private" if resolved_registry_scope == "private" else "public",
+            )
+            self.logger.info("agentatlas_schema_saved", extra={"site": site, "url": url, "variant_key": resolved_variant_key})
+            return SiteSchema(
+                site=site,
+                url=url,
+                route_key=learned["route_key"],
+                status="learned",
+                confidence=0.6,
+                elements=learned["elements"],
+                source="llm_learned",
+                tokens_used=learned["tokens_used"],
+                message=f"Schema learned and saved. Tokens used: {learned['tokens_used']}.",
+                recovery_state="completed",
+            )
+        finally:
+            self.registry.finish_recovery(lease)
 
     async def get_playbook(
         self,
@@ -394,6 +480,11 @@ class Atlas(AtlasHostedClientMixin, AtlasBrowserRuntimeMixin):
         return results
 
     async def execute(self, *args, **kwargs):
+        warn_deprecated(
+            "Atlas.execute() is deprecated and removed from the stable Atlas surface. "
+            "Use agentatlas.executor.AgentExecutor.execute() instead.",
+            stacklevel=2,
+        )
         raise RuntimeError(
             "Atlas.execute() has been demoted from the main SDK surface. "
             "Use agentatlas.executor.AgentExecutor for browser execution tooling."

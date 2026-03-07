@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 
 from agentatlas.atlas import Atlas
 from agentatlas.ui.admin import render_admin_html
+from agentatlas.versioning import API_VERSION, SDK_VERSION
 
 
 class ResolveSchemaRequest(BaseModel):
@@ -20,6 +21,7 @@ class ResolveSchemaRequest(BaseModel):
     task_key: str = "generic_extract"
     variant_key: str | None = None
     registry_scope: str = "auto"
+    max_learn_seconds: float | None = None
 
 
 class ResolveLocatorRequest(ResolveSchemaRequest):
@@ -123,7 +125,7 @@ def serialize_dataclass(value: Any) -> Any:
 def create_app() -> FastAPI:
     app = FastAPI(
         title="AgentAtlas API",
-        version="0.1.0",
+        version=SDK_VERSION,
         description="Hosted API for shared web interaction memory with validation.",
     )
     static_dir = Path(__file__).with_name("ui") / "static"
@@ -132,6 +134,10 @@ def create_app() -> FastAPI:
     @app.get("/health")
     async def health() -> dict[str, str]:
         return {"status": "ok"}
+
+    @app.get("/version")
+    async def version() -> dict[str, str]:
+        return {"sdk_version": SDK_VERSION, "api_version": API_VERSION}
 
     @app.get("/admin", response_class=HTMLResponse)
     async def admin() -> str:
@@ -149,6 +155,7 @@ def create_app() -> FastAPI:
             variant_key=request.variant_key,
             tenant_id=auth.get("tenant_id"),
             registry_scope=request.registry_scope,
+            max_learn_seconds=request.max_learn_seconds,
         )
         playbook = await atlas.get_playbook(
             site=request.site,
