@@ -1,0 +1,6 @@
+services:
+  - type: web
+    name: agentatlas-api
+    runtime: docker
+    plan: starter
+    autoDeploy: true

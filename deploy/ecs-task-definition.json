@@ -1,0 +1,37 @@
+{
+  "family": "agentatlas-api",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "512",
+  "memory": "1024",
+  "executionRoleArn": "arn:aws:iam::<account-id>:role/ecsTaskExecutionRole",
+  "taskRoleArn": "arn:aws:iam::<account-id>:role/agentatlasApiTaskRole",
+  "containerDefinitions": [
+    {
+      "name": "agentatlas-api",
+      "image": "<account-id>.dkr.ecr.<region>.amazonaws.com/agentatlas-api:latest",
+      "essential": true,
+      "portMappings": [
+        {
+          "containerPort": 8000,
+          "hostPort": 8000,
+          "protocol": "tcp"
+        }
+      ],
+      "environment": [
+        {"name": "SUPABASE_URL", "value": "<supabase-url>"},
+        {"name": "SUPABASE_SERVICE_ROLE_KEY", "value": "<service-role-key>"},
+        {"name": "OPENAI_API_KEY", "value": "<openai-api-key>"},
+        {"name": "AGENTATLAS_TENANT_API_KEYS", "value": "tenant-a:key-a|key-a-2;tenant-b:key-b"}
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/agentatlas-api",
+          "awslogs-region": "<region>",
+          "awslogs-stream-prefix": "ecs"
+        }
+      }
+    }
+  ]
+}
