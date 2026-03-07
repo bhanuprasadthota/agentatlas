@@ -4,6 +4,76 @@
 
 AgentAtlas is the registry layer for browser agents. It learns stable page locators once, stores them as reusable schemas/playbooks, and validates them over time so other agents can reuse web interaction memory instead of repeatedly perceiving the same pages.
 
+## Why install it
+
+If you scrape or automate the same web route more than once, AgentAtlas gives you a reusable memory layer for that route.
+
+Typical pattern:
+
+- first run: learn a job board page and pay the perception cost once
+- later runs: hit the registry and reuse the learned locators with `0` lookup tokens
+- over time: validate, stale-detect, review, and repair the locator set instead of relearning from scratch
+
+The clearest first use case is job boards:
+
+- Greenhouse boards
+- Lever boards
+- recruiting detail pages that your pipeline revisits every day
+
+## First demo
+
+Run the bundled job-board warm-start example:
+
+```bash
+python3 examples/job_board_warm_start.py
+```
+
+The example defaults to `private` scope with a local demo tenant so the second run can actually warm-hit immediately without waiting for public review approval on job-board domains.
+
+By default it targets a public Greenhouse board. You can switch boards or force a specific URL:
+
+```bash
+AGENTATLAS_DEMO_BOARD=lever python3 examples/job_board_warm_start.py
+AGENTATLAS_DEMO_URL=https://boards.greenhouse.io/anthropic python3 examples/job_board_warm_start.py
+```
+
+Relevant knobs:
+
+```bash
+AGENTATLAS_DEMO_REGISTRY_SCOPE=private
+AGENTATLAS_DEMO_TENANT_ID=demo-local
+```
+
+What it does:
+
+1. calls `get_schema()` for a job board page
+2. calls `get_schema()` for the same page again
+3. fetches the current playbook
+4. prints whether the second lookup was a warm registry hit
+
+Example output shape:
+
+```json
+{
+  "site": "boards.greenhouse.io",
+  "registry_scope": "private",
+  "warm_hit": true,
+  "element_count": 6,
+  "first_lookup": {
+    "source": "llm_learned",
+    "tokens_used": 1432
+  },
+  "second_lookup": {
+    "source": "registry",
+    "tokens_used": 0
+  }
+}
+```
+
+That is the core product value: repeated page understanding becomes shared memory instead of repeated LLM spend.
+
+If you switch the demo to `public` scope on a sensitive domain like Greenhouse, new learns will enter `review_required` and the second run will not warm-hit until approved. That is expected trust behavior, not a demo bug.
+
 ## Product focus
 
 - Shared schema registry for web pages and routes
@@ -38,6 +108,14 @@ pip install agentatlas
 playwright install chromium
 ```
 
+If you want to use the hosted API instead of direct Supabase/OpenAI access:
+
+```bash
+export AGENTATLAS_API_URL=https://your-agentatlas-api.example.com
+export AGENTATLAS_API_KEY=your-api-key
+python3 examples/job_board_warm_start.py
+```
+
 ## Core API
 
 ```python
@@ -66,6 +144,35 @@ locator = await atlas.resolve_locator(
     element_name="job_title",
 )
 ```
+
+## Job listing extraction example
+
+This is the simplest real workload where AgentAtlas starts paying for itself quickly:
+
+```python
+import asyncio
+
+from agentatlas import Atlas
+
+
+async def main():
+    atlas = Atlas()
+    url = "https://boards.greenhouse.io/anthropic"
+
+    first = await atlas.get_schema(site="boards.greenhouse.io", url=url)
+    second = await atlas.get_schema(site="boards.greenhouse.io", url=url)
+    playbook = await atlas.get_playbook(site="boards.greenhouse.io", url=url)
+
+    print("first:", first.source, first.tokens_used)
+    print("second:", second.source, second.tokens_used)
+    print("warm hit:", second.source == "registry" and second.tokens_used == 0)
+    print("tracked elements:", sorted((playbook.elements or {}).keys()))
+
+
+asyncio.run(main())
+```
+
+For a pipeline that revisits the same boards every day, that warm-start behavior is the whole point.
 
 `Atlas.execute()` is intentionally no longer part of the main product surface. If you still need browser execution for operator workflows or cold-start collection, use [`AgentExecutor`](/Users/bhanuprasadthota/Desktop/AgentAtlas/agentatlas/executor.py:1) explicitly.
 
@@ -111,6 +218,15 @@ Hosted mode also supports review/admin methods:
 - `Atlas.list_review_audit()`
 - `Atlas.promote_playbook()`
 - `Atlas.get_route_scope_diff()`
+
+Minimal hosted API smoke test:
+
+```bash
+curl -X POST http://127.0.0.1:8000/v1/schema/resolve \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: single-shared-key" \
+  -d '{"site":"boards.greenhouse.io","url":"https://boards.greenhouse.io/anthropic"}'
+```
 
 ## Registry scopes
 

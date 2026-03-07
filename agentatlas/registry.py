@@ -293,11 +293,16 @@ class AtlasRegistry(AtlasReviewMixin, AtlasBenchmarkMixin, AtlasQualityMixin):
             .eq("task_id", task_id)
             .eq("variant_key", variant_key)
             .order("version", desc=True)
-            .limit(1)
+            .limit(25)
             .execute()
             .data
         )
-        latest = existing_rows[0] if existing_rows else None
+        scoped_existing_rows = self._filter_playbooks_by_scope(
+            existing_rows or [],
+            tenant_id=tenant_id,
+            registry_scope=registry_scope,
+        )
+        latest = scoped_existing_rows[0] if scoped_existing_rows else None
         latest_payload = latest.get("payload") if latest else None
         latest_fingerprint = self._fingerprint_value(latest_payload)
         new_fingerprint = self._fingerprint_value(payload)
@@ -306,7 +311,6 @@ class AtlasRegistry(AtlasReviewMixin, AtlasBenchmarkMixin, AtlasQualityMixin):
             payload["validation"] = (latest_payload or {}).get("validation", payload["validation"])
             payload["telemetry"] = (latest_payload or {}).get("telemetry", {})
             payload["promotion"] = (latest_payload or {}).get("promotion", payload["promotion"])
-            payload["registry"] = (latest_payload or {}).get("registry", payload["registry"])
             payload["quality"] = self._compute_quality_summary(
                 confidence=latest.get("confidence", 0.6),
                 validation=payload["validation"],
@@ -322,9 +326,9 @@ class AtlasRegistry(AtlasReviewMixin, AtlasBenchmarkMixin, AtlasQualityMixin):
             return
 
         if latest:
-            self.sb.table("playbooks").update({"status": "stale"}).eq("site_id", site_id).eq("route_id", route_id).eq("task_id", task_id).eq("variant_key", variant_key).eq("status", "active").execute()
+            self.sb.table("playbooks").update({"status": "stale"}).eq("id", latest["id"]).execute()
 
-        next_version = latest.get("version", 0) + 1 if latest else 1
+        next_version = existing_rows[0].get("version", 0) + 1 if existing_rows else 1
         self.sb.table("playbooks").insert(
             {
                 "site_id": site_id,
