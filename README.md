@@ -30,6 +30,14 @@ python3 examples/job_board_warm_start.py
 
 The example defaults to `private` scope with a local demo tenant so the second run can actually warm-hit immediately without waiting for public review approval on job-board domains.
 
+If you already have the hosted API running, use the hosted variant instead:
+
+```bash
+export AGENTATLAS_API_URL=http://localhost:8000
+export AGENTATLAS_API_KEY=your-api-key
+python3 examples/hosted_api_warm_start.py
+```
+
 By default it targets a public Greenhouse board. You can switch boards or force a specific URL:
 
 ```bash
@@ -113,7 +121,7 @@ If you want to use the hosted API instead of direct Supabase/OpenAI access:
 ```bash
 export AGENTATLAS_API_URL=https://your-agentatlas-api.example.com
 export AGENTATLAS_API_KEY=your-api-key
-python3 examples/job_board_warm_start.py
+python3 examples/hosted_api_warm_start.py
 ```
 
 ## Core API
