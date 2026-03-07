@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import warnings
 
-SDK_VERSION = "0.3.1"
+SDK_VERSION = "0.4.0"
 API_VERSION = "v1"
 
 STABLE_SURFACE = {
