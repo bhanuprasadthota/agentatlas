@@ -11,4 +11,4 @@ except ModuleNotFoundError:
     app = None
     create_app = None
 
-__version__ = "0.3.0"
+__version__ = "0.3.1"

@@ -248,7 +248,10 @@ class AtlasHostedClientMixin:
         region = (os.getenv("AGENTATLAS_REGION") or "").strip().lower()
         if not auth_state:
             lowered_url = (url or "").lower()
-            auth_state = "loggedout" if any(token in lowered_url for token in ("/login", "/signin", "/auth")) else "loggedout"
+            if any(token in lowered_url for token in ("/dashboard", "/account", "/profile", "/settings")):
+                auth_state = "loggedin"
+            else:
+                auth_state = "loggedout"
         normalized_locale = re.sub(r"[^A-Za-z]", "", locale)
         if len(normalized_locale) >= 4:
             normalized_locale = normalized_locale[:2].lower() + normalized_locale[2:].upper()
