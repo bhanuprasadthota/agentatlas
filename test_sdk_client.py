@@ -117,8 +117,19 @@ def test_hosted_sdk_methods(monkeypatch):
                     "review_reason": "domain_class:social_auth",
                     "registry_scope": "public",
                     "tenant_id": "tenant-a",
+                    "pending_age_hours": 30.0,
+                    "overdue": True,
+                    "flag_count": 1,
                 }
             ]
+        },
+        "https://api.agentatlas.dev/v1/review/dashboard?limit=100&registry_scope=public": {
+            "queue_size": 1,
+            "overdue_count": 1,
+            "oldest_pending_hours": 30.0,
+            "sla_hours": 24,
+            "flagged_count": 1,
+            "reasons": {"domain_class:social_auth": 1},
         },
         "https://api.agentatlas.dev/v1/review/audit?limit=100&registry_scope=auto": {
             "audit": [
@@ -139,6 +150,7 @@ def test_hosted_sdk_methods(monkeypatch):
             ]
         },
         "https://api.agentatlas.dev/v1/review/promote": {"promoted": True},
+        "https://api.agentatlas.dev/v1/review/flag": {"flagged": True},
         "https://api.agentatlas.dev/v1/review/diff": {
             "site": "github.com",
             "url": "https://github.com/login",
@@ -183,8 +195,12 @@ def test_hosted_sdk_methods(monkeypatch):
         atlas.record_outcome(site="example.com", url="https://example.com", status="success")
     )
     queue = __import__("asyncio").run(atlas.list_review_queue())
+    review_dashboard = __import__("asyncio").run(atlas.get_review_dashboard())
     audit = __import__("asyncio").run(atlas.list_review_audit())
     promoted = __import__("asyncio").run(atlas.promote_playbook(playbook_id="pb-1", reviewer="qa@example.com"))
+    flagged = __import__("asyncio").run(
+        atlas.flag_schema(site="github.com", url="https://github.com/login", reporter="qa@example.com", reason="bad_selector")
+    )
     diff = __import__("asyncio").run(atlas.get_route_scope_diff(site="github.com", url="https://github.com/login"))
 
     assert locator["selector"] == "heading+Example"
@@ -192,16 +208,20 @@ def test_hosted_sdk_methods(monkeypatch):
     assert report.locator_results[0].actionable is True
     assert recorded is True
     assert queue[0]["playbook_id"] == "pb-1"
+    assert review_dashboard["overdue_count"] == 1
     assert audit[0]["reviewer"] == "qa@example.com"
     assert promoted is True
+    assert flagged is True
     assert diff["decision"]["winner"] == "public"
     assert [item["url"] for item in captured] == [
         "https://api.agentatlas.dev/v1/locator/resolve",
         "https://api.agentatlas.dev/v1/validate",
         "https://api.agentatlas.dev/v1/outcome",
         "https://api.agentatlas.dev/v1/review/queue?limit=50&registry_scope=public",
+        "https://api.agentatlas.dev/v1/review/dashboard?limit=100&registry_scope=public",
         "https://api.agentatlas.dev/v1/review/audit?limit=100&registry_scope=auto",
         "https://api.agentatlas.dev/v1/review/promote",
+        "https://api.agentatlas.dev/v1/review/flag",
         "https://api.agentatlas.dev/v1/review/diff",
     ]
     assert captured[0]["body"]["variant_key"] == "desktop_enUS_loggedout"

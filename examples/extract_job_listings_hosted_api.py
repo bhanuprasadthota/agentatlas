@@ -8,9 +8,11 @@ Usage:
 """
 
 import asyncio
+import json
 import os
 import sys
 from pathlib import Path
+from urllib.request import urlopen
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -20,12 +22,19 @@ from examples.extract_job_listings import main as extract_main
 
 
 async def main() -> None:
-    if not os.getenv("AGENTATLAS_API_URL", "").strip():
+    api_url = os.getenv("AGENTATLAS_API_URL", "").strip()
+    if not api_url:
         raise SystemExit(
             "Missing required environment variable: AGENTATLAS_API_URL\n"
             "Set it and retry:\n"
             "    export AGENTATLAS_API_URL=..."
         )
+    try:
+        with urlopen(f"{api_url.rstrip('/')}/health", timeout=5) as response:
+            health = json.loads(response.read().decode("utf-8"))
+        print(f"Hosted API health: {health}")
+    except Exception as exc:
+        raise SystemExit(f"Hosted API unreachable at {api_url}: {exc}")
     await extract_main()
 
 

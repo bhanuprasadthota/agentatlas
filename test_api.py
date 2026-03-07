@@ -133,8 +133,21 @@ class _FakeRegistry:
                 "review_reason": "domain_class:social_auth",
                 "registry_scope": registry_scope,
                 "tenant_id": tenant_id,
+                "pending_age_hours": 30.0,
+                "overdue": True,
+                "flag_count": 1,
             }
         ][:limit]
+
+    def get_review_dashboard(self, tenant_id=None, registry_scope="public", limit: int = 100):
+        return {
+            "queue_size": 1,
+            "overdue_count": 1,
+            "oldest_pending_hours": 30.0,
+            "sla_hours": 24,
+            "flagged_count": 1,
+            "reasons": {"domain_class:social_auth": 1},
+        }
 
     def list_review_audit(self, tenant_id=None, registry_scope="auto", playbook_id=None, limit: int = 100):
         return [
@@ -156,6 +169,9 @@ class _FakeRegistry:
 
     def promote_playbook(self, playbook_id, reviewer: str, approved: bool = True, notes: str = ""):
         return playbook_id == "pb-1" and reviewer == "qa@example.com"
+
+    def flag_schema(self, site: str, url: str, reporter: str, reason: str, **_kwargs):
+        return site == "github.com" and url == "https://github.com/login" and reporter == "qa@example.com" and reason == "bad_selector"
 
     def get_route_scope_diff(self, site: str, url: str, task_key: str = "generic_extract", variant_key: str = "desktop_enUS_loggedout", tenant_id=None):
         return {
@@ -214,11 +230,16 @@ def test_api_endpoints():
     assert client.get("/v1/benchmarks/compare").json()["status"] == "stable"
     assert client.get("/v1/benchmarks/dashboard").json()["categories"]["auth_wall"]["healthy_count"] == 2
     assert client.get("/v1/review/queue").json()["queue"][0]["review_status"] == "review_required"
+    assert client.get("/v1/review/dashboard").json()["overdue_count"] == 1
     assert client.get("/admin").status_code == 200
     assert client.get("/static/admin.css").status_code == 200
     assert client.get("/static/admin.js").status_code == 200
     assert client.get("/v1/review/audit").json()["audit"][0]["reviewer"] == "qa@example.com"
     assert client.post("/v1/review/promote", json={"playbook_id": "pb-1", "reviewer": "qa@example.com"}).json()["promoted"] is True
+    assert client.post(
+        "/v1/review/flag",
+        json={"site": "github.com", "url": "https://github.com/login", "reporter": "qa@example.com", "reason": "bad_selector"},
+    ).json()["flagged"] is True
     diff = client.post("/v1/review/diff", json={"site": "github.com", "url": "https://github.com/login"})
     assert diff.status_code == 200
     assert diff.json()["decision"]["winner"] == "public"

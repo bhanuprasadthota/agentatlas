@@ -109,6 +109,19 @@ class _PlaybookFetchSupabase:
         raise AssertionError(f"Unexpected table requested: {name}")
 
 
+class _ReviewSupabase:
+    def __init__(self, playbook_rows=None, review_events=None):
+        self.playbook_rows = playbook_rows or []
+        self.review_events = review_events or []
+
+    def table(self, name):
+        if name == "playbooks":
+            return _FakeQuery(self.playbook_rows)
+        if name == "review_events":
+            return _FakeQuery(self.review_events)
+        raise AssertionError(f"Unexpected table requested: {name}")
+
+
 class RegistryHelpersTest(unittest.TestCase):
     def test_match_route_prefers_matching_pattern(self):
         routes = [
@@ -507,6 +520,68 @@ class RegistryHelpersTest(unittest.TestCase):
     def test_locator_priority_prefers_structured_selectors(self):
         self.assertEqual(AtlasRegistry._locator_priority({"type": "data_testid", "selector": "submit"}), 1)
         self.assertEqual(AtlasRegistry._locator_priority({"type": "text", "selector": "Apply now"}), 7)
+
+    def test_review_queue_reports_pending_age_and_overdue(self):
+        registry = AtlasRegistry(
+            _ReviewSupabase(
+                playbook_rows=[
+                    {
+                        "id": "pb-1",
+                        "payload": {
+                            "registry": {"scope": "public", "tenant_id": None},
+                            "promotion": {"review_status": "review_required", "review_reason": "domain_class:social_auth"},
+                        },
+                        "confidence": 0.6,
+                        "variant_key": "desktop_enUS_loggedout",
+                        "version": 1,
+                        "created_at": "2026-03-05T10:00:00+00:00",
+                    }
+                ]
+            )
+        )
+        registry.get_playbook_context = lambda playbook_id: {
+            "site": "github.com",
+            "url": "https://github.com/login",
+            "route_key": "login",
+            "created_at": "2026-03-05T10:00:00+00:00",
+        }
+
+        queue = registry.list_review_queue(limit=10)
+        dashboard = registry.get_review_dashboard(limit=10)
+
+        self.assertEqual(queue[0]["review_status"], "review_required")
+        self.assertTrue(queue[0]["overdue"])
+        self.assertGreater(queue[0]["pending_age_hours"], 0)
+        self.assertEqual(dashboard["queue_size"], 1)
+        self.assertEqual(dashboard["overdue_count"], 1)
+
+    def test_review_audit_prefers_durable_review_events_table(self):
+        registry = AtlasRegistry(
+            _ReviewSupabase(
+                review_events=[
+                    {
+                        "playbook_id": "pb-1",
+                        "occurred_at": "2026-03-07T10:00:00+00:00",
+                        "site": "github.com",
+                        "url": "https://github.com/login",
+                        "route_key": "login",
+                        "variant_key": "desktop_enUS_loggedout",
+                        "tenant_id": None,
+                        "registry_scope": "public",
+                        "reviewer": "qa@example.com",
+                        "reviewer_role": "admin",
+                        "action": "approved",
+                        "notes": "Looks good",
+                        "metadata": {"source": "manual"},
+                    }
+                ]
+            )
+        )
+
+        audit = registry.list_review_audit(limit=10)
+
+        self.assertEqual(audit[0]["source"], "review_events")
+        self.assertEqual(audit[0]["reviewer"], "qa@example.com")
 
 
 class ModelSurfaceTest(unittest.TestCase):

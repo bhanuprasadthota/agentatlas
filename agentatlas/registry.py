@@ -739,7 +739,7 @@ class AtlasRegistry(AtlasReviewMixin, AtlasBenchmarkMixin, AtlasQualityMixin):
         try:
             rows = (
                 self.sb.table("playbooks")
-                .select("id, site_id, route_id, task_id, variant_key, version, payload, confidence")
+                .select("id, site_id, route_id, task_id, variant_key, version, payload, confidence, created_at")
                 .eq("id", playbook_id)
                 .limit(1)
                 .execute()
@@ -776,6 +776,7 @@ class AtlasRegistry(AtlasReviewMixin, AtlasBenchmarkMixin, AtlasQualityMixin):
                 "version": playbook["version"],
                 "payload": playbook.get("payload") or {},
                 "confidence": playbook.get("confidence"),
+                "created_at": playbook.get("created_at"),
             }
         except Exception:
             return None
@@ -794,6 +795,43 @@ class AtlasRegistry(AtlasReviewMixin, AtlasBenchmarkMixin, AtlasQualityMixin):
         payload["fingerprint_source"] = source
         try:
             self.sb.table("playbooks").update({"payload": payload}).eq("id", playbook_id).execute()
+            return True
+        except Exception:
+            return False
+
+    def _insert_review_audit_event(
+        self,
+        *,
+        playbook_id,
+        site: str | None,
+        url: str | None,
+        route_key: str | None,
+        variant_key: str | None,
+        tenant_id: str | None,
+        registry_scope: str,
+        reviewer: str,
+        reviewer_role: str,
+        action: str,
+        notes: str = "",
+        metadata: dict | None = None,
+    ) -> bool:
+        row = {
+            "playbook_id": playbook_id,
+            "occurred_at": self._now_iso(),
+            "site": site,
+            "url": url,
+            "route_key": route_key,
+            "variant_key": variant_key,
+            "tenant_id": tenant_id,
+            "registry_scope": registry_scope,
+            "reviewer": reviewer,
+            "reviewer_role": reviewer_role,
+            "action": action,
+            "notes": notes,
+            "metadata": metadata or {},
+        }
+        try:
+            self.sb.table("review_events").insert(row).execute()
             return True
         except Exception:
             return False

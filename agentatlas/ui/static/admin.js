@@ -7,6 +7,7 @@ const els = {
   dashboardCards: document.getElementById('dashboardCards'),
   dashboardCategories: document.getElementById('dashboardCategories'),
   reviewQueue: document.getElementById('reviewQueue'),
+  reviewCards: document.getElementById('reviewCards'),
   auditTrail: document.getElementById('auditTrail'),
   routeDiff: document.getElementById('routeDiff'),
   diffSite: document.getElementById('diffSite'),
@@ -69,11 +70,21 @@ async function loadDashboard() {
 
 async function loadQueue() {
   const scope = encodeURIComponent(els.registryScope.value);
+  const dashboard = await api(`/v1/review/dashboard?registry_scope=${scope}&limit=100`);
   const queue = await api(`/v1/review/queue?registry_scope=${scope}&limit=50`);
+  els.reviewCards.innerHTML = `
+    <div class="card"><div class="metric">${dashboard.queue_size}</div><div>Queued</div></div>
+    <div class="card"><div class="metric">${dashboard.overdue_count}</div><div>Overdue</div></div>
+    <div class="card"><div class="metric">${dashboard.oldest_pending_hours}</div><div>Oldest Pending (h)</div></div>
+    <div class="card"><div class="metric">${dashboard.flagged_count}</div><div>Flagged</div></div>
+  `;
   renderTable(els.reviewQueue, queue.queue || [], [
     { key: 'site', label: 'Site' },
     { key: 'route_key', label: 'Route' },
     { key: 'review_reason', label: 'Reason' },
+    { key: 'pending_age_hours', label: 'Pending (h)' },
+    { key: 'overdue', label: 'Overdue' },
+    { key: 'flag_count', label: 'Flags' },
     { key: 'confidence', label: 'Confidence' },
     { key: 'playbook_id', label: 'Actions', render: row => `
       <button data-action="approve" data-playbook="${row.playbook_id}">Approve</button>

@@ -167,6 +167,12 @@ class AtlasHostedClientMixin:
         )
         return [ReviewQueueItem(**item) for item in body.get("queue", [])]
 
+    def _get_review_dashboard_via_api(self, limit: int, registry_scope: str) -> dict:
+        return self._request_api_json(
+            method="GET",
+            path=f"/v1/review/dashboard?limit={limit}&registry_scope={registry_scope}",
+        )
+
     def _list_review_audit_via_api(self, limit: int, registry_scope: str) -> list[ReviewAuditEvent]:
         body = self._request_api_json(
             method="GET",
@@ -186,6 +192,35 @@ class AtlasHostedClientMixin:
             },
         )
         return bool(body.get("promoted"))
+
+    def _flag_schema_via_api(
+        self,
+        site: str,
+        url: str,
+        reporter: str,
+        reason: str,
+        task_key: str,
+        variant_key: str,
+        registry_scope: str,
+        notes: str,
+        metadata: dict | None,
+    ) -> bool:
+        body = self._request_api_json(
+            method="POST",
+            path="/v1/review/flag",
+            payload={
+                "site": site,
+                "url": url,
+                "reporter": reporter,
+                "reason": reason,
+                "task_key": task_key,
+                "variant_key": variant_key,
+                "registry_scope": registry_scope,
+                "notes": notes,
+                "metadata": metadata or {},
+            },
+        )
+        return bool(body.get("flagged"))
 
     def _get_route_scope_diff_via_api(
         self,

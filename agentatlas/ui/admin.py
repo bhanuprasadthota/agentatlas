@@ -65,6 +65,7 @@ def render_admin_html() -> str:
       </div>
       <div class="panel">
         <h2>Review Queue</h2>
+        <div id="reviewCards" class="cards"></div>
         <div id="reviewQueue"></div>
       </div>
       <div class="panel">

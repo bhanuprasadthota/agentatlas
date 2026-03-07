@@ -47,6 +47,18 @@ class PromotePlaybookRequest(BaseModel):
     notes: str = ""
 
 
+class FlagSchemaRequest(BaseModel):
+    site: str
+    url: str
+    reporter: str
+    reason: str
+    task_key: str = "generic_extract"
+    variant_key: str | None = None
+    registry_scope: str = "auto"
+    notes: str = ""
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
 class ScopeDiffRequest(BaseModel):
     site: str
     url: str
@@ -341,6 +353,19 @@ def create_app() -> FastAPI:
         )
         return {"queue": queue}
 
+    @app.get("/v1/review/dashboard")
+    async def review_dashboard(
+        limit: int = 100,
+        registry_scope: str = "public",
+        atlas: Atlas = Depends(get_atlas),
+        auth: dict[str, str | None] = Depends(require_api_key),
+    ) -> dict[str, Any]:
+        return atlas.registry.get_review_dashboard(
+            tenant_id=auth.get("tenant_id"),
+            registry_scope=registry_scope,
+            limit=limit,
+        )
+
     @app.get("/v1/review/audit")
     async def review_audit(
         limit: int = 100,
@@ -370,6 +395,26 @@ def create_app() -> FastAPI:
             notes=request.notes,
         )
         return {"promoted": promoted}
+
+    @app.post("/v1/review/flag")
+    async def flag_schema(
+        request: FlagSchemaRequest,
+        atlas: Atlas = Depends(get_atlas),
+        auth: dict[str, str | None] = Depends(require_api_key),
+    ) -> dict[str, Any]:
+        flagged = atlas.registry.flag_schema(
+            site=request.site,
+            url=request.url,
+            reporter=request.reporter,
+            reason=request.reason,
+            task_key=request.task_key,
+            variant_key=request.variant_key or atlas.infer_variant_key(request.url),
+            tenant_id=auth.get("tenant_id"),
+            registry_scope=request.registry_scope,
+            notes=request.notes,
+            metadata=request.metadata,
+        )
+        return {"flagged": flagged}
 
     @app.post("/v1/review/diff")
     async def review_diff(

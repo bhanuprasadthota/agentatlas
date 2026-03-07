@@ -109,6 +109,9 @@ class ReviewQueueItem:
     review_reason: str | None = None
     registry_scope: str = "public"
     tenant_id: str | None = None
+    pending_age_hours: float | None = None
+    overdue: bool = False
+    flag_count: int = 0
 
 
 @dataclass
@@ -125,6 +128,8 @@ class ReviewAuditEvent:
     variant_key: str | None = None
     tenant_id: str | None = None
     registry_scope: str = "public"
+    source: str = "payload"
+    metadata: dict = field(default_factory=dict)
 
 
 @dataclass

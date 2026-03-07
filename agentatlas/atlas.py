@@ -389,6 +389,16 @@ class Atlas(AtlasHostedClientMixin, AtlasBrowserRuntimeMixin):
             limit=limit,
         )
 
+    async def get_review_dashboard(self, limit: int = 100) -> dict:
+        scope = self.registry_scope if self.registry_scope != "auto" else "public"
+        if self.use_api:
+            return self._get_review_dashboard_via_api(limit=limit, registry_scope=scope)
+        return self.registry.get_review_dashboard(
+            tenant_id=self.tenant_id,
+            registry_scope=scope,
+            limit=limit,
+        )
+
     async def list_review_audit(self, limit: int = 100) -> list[dict]:
         scope = self.registry_scope if self.registry_scope != "auto" else "auto"
         if self.use_api:
@@ -412,6 +422,45 @@ class Atlas(AtlasHostedClientMixin, AtlasBrowserRuntimeMixin):
             reviewer=reviewer,
             approved=approved,
             notes=notes,
+        )
+
+    async def flag_schema(
+        self,
+        site: str,
+        url: str,
+        reporter: str,
+        reason: str,
+        task_key: str = DEFAULT_TASK_KEY,
+        variant_key: str | None = None,
+        registry_scope: str | None = None,
+        notes: str = "",
+        metadata: dict | None = None,
+    ) -> bool:
+        resolved_variant_key = self.infer_variant_key(url=url, variant_key=variant_key)
+        resolved_registry_scope = registry_scope or self.registry_scope
+        if self.use_api:
+            return self._flag_schema_via_api(
+                site=site,
+                url=url,
+                reporter=reporter,
+                reason=reason,
+                task_key=task_key,
+                variant_key=resolved_variant_key,
+                registry_scope=resolved_registry_scope,
+                notes=notes,
+                metadata=metadata,
+            )
+        return self.registry.flag_schema(
+            site=site,
+            url=url,
+            reporter=reporter,
+            reason=reason,
+            task_key=task_key,
+            variant_key=resolved_variant_key,
+            tenant_id=self.tenant_id,
+            registry_scope=resolved_registry_scope,
+            notes=notes,
+            metadata=metadata,
         )
 
     async def get_route_scope_diff(

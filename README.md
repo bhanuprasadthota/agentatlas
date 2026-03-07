@@ -28,6 +28,12 @@ Run the real extraction demo:
 python3 examples/extract_job_listings.py
 ```
 
+Or try the second supported vertical:
+
+```bash
+python3 examples/extract_product_cards.py
+```
+
 This is the primary onboarding path now. It does two things:
 
 1. loads known Greenhouse page anchors from AgentAtlas
@@ -334,6 +340,8 @@ Apply the migration in [`supabase/migrations/20260307_create_validation_runs.sql
 
 Apply [`supabase/migrations/20260307_create_benchmark_runs.sql`](/Users/bhanuprasadthota/Desktop/AgentAtlas/supabase/migrations/20260307_create_benchmark_runs.sql) to persist benchmark suite history in `benchmark_runs`.
 
+Apply [`supabase/migrations/20260307_create_review_events.sql`](/Users/bhanuprasadthota/Desktop/AgentAtlas/supabase/migrations/20260307_create_review_events.sql) to persist durable review audit history in `review_events`. If that table is absent, AgentAtlas falls back to the payload audit trail stored on each playbook.
+
 ## Integration benchmarks
 
 [`test_execute.py`](/Users/bhanuprasadthota/Desktop/AgentAtlas/test_execute.py) is now an opt-in integration harness for warm-start reliability, not a top-level demo script. It benchmarks repeated `get_schema()` calls plus `validate()` across public workflows and reports:
@@ -393,8 +401,10 @@ The first hosted API surface now exists in [`agentatlas/api.py`](/Users/bhanupra
 - `GET /v1/benchmarks/compare`
 - `GET /v1/benchmarks/dashboard`
 - `GET /v1/review/queue`
+- `GET /v1/review/dashboard`
 - `GET /v1/review/audit`
 - `POST /v1/review/promote`
+- `POST /v1/review/flag`
 - `POST /v1/review/diff`
 
 Run it locally with:
@@ -472,8 +482,29 @@ Direct-mode review operations:
 
 ```python
 queue = await atlas.list_review_queue(limit=20)
+dashboard = await atlas.get_review_dashboard()
+await atlas.flag_schema(
+    site="github.com",
+    url="https://github.com/login",
+    reporter="qa@agentatlas.ai",
+    reason="bad_selector",
+    notes="Submit button points to the wrong control",
+)
 await atlas.promote_playbook(playbook_id="...", reviewer="ops@agentatlas.ai", approved=True, notes="Verified selectors")
 ```
+
+Review queue items now include:
+
+- `pending_age_hours`
+- `overdue`
+- `flag_count`
+
+If a public schema exists but is held for review, callers now receive:
+
+- `status="pending_review"`
+- `source="review_queue"`
+
+That gives downstream agents an explicit fallback state instead of an ambiguous miss.
 
 Tenant-scoped benchmark dashboards are available through the API and registry history layer. Benchmark runs now persist tenant metadata so reliability trends can be viewed per tenant instead of only globally.
 
