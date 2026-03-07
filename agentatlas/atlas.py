@@ -182,6 +182,17 @@ class Atlas:
                 print(f"[AgentAtlas] 🤖 Action: {action}")
                 history.append({"step": step + 1, "url": current_url, "action": action})
 
+                # Detect repeated failures — skip if same action failed 2x
+                last_actions = [h["action"] for h in history[-2:]]
+                if len(last_actions) == 2 and all(
+                    a.get("type") == action.get("type") and 
+                    a.get("element") == action.get("element") 
+                    for a in last_actions
+                ):
+                    print(f"[AgentAtlas] ⚠ Same action failed twice — skipping and trying next")
+                    history.append({"step": step + 1, "url": current_url, "action": {"type": "skip", "reason": "repeated failure"}})
+                    continue
+
                 # Execute the action
                 if action["type"] == "done":
                     print(f"[AgentAtlas] ✅ Task complete!")
@@ -288,6 +299,9 @@ Rules:
         element_info = elements.get(element_name, {})
         selector     = element_info.get("selector", "")
         sel_type     = element_info.get("type", "")
+        reason       = action.get("reason", "")
+
+        # try role-based selector
         try:
             if sel_type == "role" and "+" in selector:
                 role, name = selector.split("+", 1)
@@ -296,20 +310,74 @@ Rules:
                 return True
         except Exception:
             pass
+
+        # try text selector
         try:
-            if sel_type == "text":
+            if sel_type == "text" and selector:
                 await page.get_by_text(selector, exact=False).first.click(timeout=5000)
                 print(f"[AgentAtlas] 👆 Clicked: {element_name} (text)")
                 return True
         except Exception:
             pass
+
+        # try css selector
         try:
-            await page.click(selector, timeout=5000)
-            print(f"[AgentAtlas] 👆 Clicked: {element_name} (css)")
-            return True
+            if selector and selector.strip():
+                await page.click(selector, timeout=5000)
+                print(f"[AgentAtlas] 👆 Clicked: {element_name} (css)")
+                return True
+        except Exception:
+            pass
+
+        # FALLBACK: scan accessibility tree for any link matching element_name or reason
+        print(f"[AgentAtlas] 🔄 Registry selector failed — scanning page for clickable link...")
+        try:
+            snapshot = await page.accessibility.snapshot(interesting_only=True)
+            candidates = []
+            keywords   = [w.lower() for w in (element_name + " " + reason).split() if len(w) > 3]
+            skip = ["skip", "login", "cookie", "privacy", "download", "facebook", "twitter", "instagram", "footer", "newsletter", "linkedin", "youtube", "app store", "google play", "read more about", "join us", "amazon jobs home"]
+
+            def scan(node):
+                if not node: return
+                role = node.get("role", "")
+                name = node.get("name", "").strip()
+                if role == "link" and name and not any(s in name.lower() for s in skip):
+                    score = sum(1 for kw in keywords if kw in name.lower())
+                    if score > 0:
+                        candidates.append((score, name))
+                for child in node.get("children", []):
+                    scan(child)
+            scan(snapshot)
+
+            if candidates:
+                candidates.sort(reverse=True)
+                best_name = candidates[0][1]
+                print(f"[AgentAtlas] 🎯 Found candidate link: {best_name}")
+                await page.get_by_role("link", name=best_name).first.click(timeout=5000)
+                print(f"[AgentAtlas] 👆 Clicked via fallback scan: {best_name}")
+                return True
+
+            # Last resort: click first link whose href looks like a job detail URL
+            print(f"[AgentAtlas] 🔄 No keyword match — trying href pattern fallback...")
+            job_url_patterns = ["/jobs/", "/job/", "/careers/", "/position/", "/opening/"]
+            links = await page.eval_on_selector_all(
+                "a[href]",
+                "els => els.map(el => ({text: el.innerText.trim(), href: el.href}))"
+            )
+            for link in links:
+                href = link.get("href", "")
+                text = link.get("text", "")
+                if any(p in href for p in job_url_patterns) and text and len(text) > 3:
+                    skip_texts = ["skip", "read more", "login", "cookie"]
+                    if not any(s in text.lower() for s in skip_texts):
+                        print(f"[AgentAtlas] 🎯 Found job link by href: {text} → {href}")
+                        await page.goto(href, wait_until="networkidle", timeout=15000)
+                        return True
         except Exception as e:
-            print(f"[AgentAtlas] ⚠ Click failed for {element_name}: {e}")
-            return False
+            print(f"[AgentAtlas] ⚠ Fallback click failed: {e}")
+
+        print(f"[AgentAtlas] ⚠ All click strategies failed for: {element_name}")
+        return False
 
     # ─────────────────────────────────────────────
     # PRIVATE: type action
