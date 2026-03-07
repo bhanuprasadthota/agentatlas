@@ -117,6 +117,25 @@ class _RegistryUnavailable:
         return True
 
 
+class _PendingReviewRegistry:
+    def fetch_schema(self, *_args, **_kwargs):
+        return None
+
+    def get_route_playbook_snapshot(self, *_args, **_kwargs):
+        return {
+            "route_key": "login",
+            "status": "active",
+            "payload": {
+                "registry": {"scope": "public", "tenant_id": None},
+                "promotion": {"review_status": "review_required"},
+            },
+            "confidence": 0.61,
+        }
+
+    def read_degraded(self):
+        return False
+
+
 class CoordinatedRecoverySurfaceTest(unittest.TestCase):
     def _make_atlas(self, registry):
         atlas = object.__new__(Atlas)
@@ -151,6 +170,16 @@ class CoordinatedRecoverySurfaceTest(unittest.TestCase):
         self.assertEqual(schema.status, "registry_unavailable")
         self.assertEqual(schema.source, "registry_unavailable")
         self.assertEqual(schema.recovery_state, "degraded_read")
+
+    def test_get_schema_returns_pending_review_for_public_review_queue_entries(self):
+        atlas = self._make_atlas(_PendingReviewRegistry())
+
+        schema = asyncio.run(atlas.get_schema(site="github.com", url="https://github.com/login"))
+
+        self.assertEqual(schema.status, "pending_review")
+        self.assertEqual(schema.source, "review_queue")
+        self.assertEqual(schema.recovery_state, "review_required")
+        self.assertIn("awaiting review approval", schema.message)
 
     def test_validate_returns_in_progress_when_relearn_is_already_running(self):
         atlas = self._make_atlas(_ValidationRecoveryRegistry())
@@ -235,6 +264,40 @@ class CoordinatedRecoverySurfaceTest(unittest.TestCase):
         self.assertEqual(report.status, "timeout")
         self.assertEqual(report.recovery_state, "timed_out")
         self.assertEqual(report.source, "timeout")
+
+    def test_validate_surfaces_pending_review_when_public_schema_is_queued(self):
+        class _PendingReviewValidationRegistry:
+            def get_playbook(self, *_args, **_kwargs):
+                return None
+
+            def fetch_schema(self, *_args, **_kwargs):
+                return None
+
+        atlas = self._make_atlas(_PendingReviewValidationRegistry())
+
+        async def fake_get_schema(*_args, **_kwargs):
+            from agentatlas.models import SiteSchema
+
+            return SiteSchema(
+                site="github.com",
+                url="https://github.com/login",
+                route_key="login",
+                status="pending_review",
+                confidence=0.61,
+                elements={},
+                source="review_queue",
+                tokens_used=0,
+                message="Schema exists in the public registry but is awaiting review approval.",
+                recovery_state="review_required",
+            )
+
+        atlas.get_schema = fake_get_schema
+
+        report = asyncio.run(atlas.validate(site="github.com", url="https://github.com/login"))
+
+        self.assertEqual(report.status, "pending_review")
+        self.assertEqual(report.source, "review_queue")
+        self.assertEqual(report.recovery_state, "review_required")
 
     def test_wait_for_page_settle_waits_for_stable_signature(self):
         atlas = self._make_atlas(_RecoveringSchemaRegistry())

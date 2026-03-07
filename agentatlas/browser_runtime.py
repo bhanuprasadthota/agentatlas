@@ -53,6 +53,66 @@ class AtlasBrowserRuntimeMixin:
                 tenant_id=tenant_id,
                 registry_scope=registry_scope,
             )
+            if learned_schema.status == "recovering":
+                return ValidationReport(
+                    site=site,
+                    url=url,
+                    route_key=learned_schema.route_key,
+                    status="recovering",
+                    source=learned_schema.source,
+                    validation_count=1,
+                    success_count=0,
+                    failure_count=0,
+                    success_rate=0.0,
+                    last_validated_at=self._now_iso(),
+                    schema_version=None,
+                    stored_fingerprint=None,
+                    current_fingerprint=None,
+                    fingerprint_match=None,
+                    locator_results=[],
+                    message=learned_schema.message,
+                    recovery_state=learned_schema.recovery_state,
+                )
+            if learned_schema.status == "pending_review":
+                return ValidationReport(
+                    site=site,
+                    url=url,
+                    route_key=learned_schema.route_key,
+                    status="pending_review",
+                    source=learned_schema.source,
+                    validation_count=1,
+                    success_count=0,
+                    failure_count=0,
+                    success_rate=0.0,
+                    last_validated_at=self._now_iso(),
+                    schema_version=None,
+                    stored_fingerprint=None,
+                    current_fingerprint=None,
+                    fingerprint_match=None,
+                    locator_results=[],
+                    message=learned_schema.message,
+                    recovery_state=learned_schema.recovery_state,
+                )
+            if learned_schema.status == "timeout":
+                return ValidationReport(
+                    site=site,
+                    url=url,
+                    route_key=learned_schema.route_key,
+                    status="timeout",
+                    source=learned_schema.source,
+                    validation_count=1,
+                    success_count=0,
+                    failure_count=1,
+                    success_rate=0.0,
+                    last_validated_at=self._now_iso(),
+                    schema_version=None,
+                    stored_fingerprint=None,
+                    current_fingerprint=None,
+                    fingerprint_match=None,
+                    locator_results=[],
+                    message=learned_schema.message,
+                    recovery_state=learned_schema.recovery_state,
+                )
             if learned_schema.status == "not_found":
                 return ValidationReport(
                     site=site,
@@ -70,6 +130,7 @@ class AtlasBrowserRuntimeMixin:
                     current_fingerprint=None,
                     fingerprint_match=None,
                     message="Schema unavailable for validation.",
+                    recovery_state=learned_schema.recovery_state,
                 )
             schema = {
                 "route_key": learned_schema.route_key,
@@ -138,6 +199,7 @@ class AtlasBrowserRuntimeMixin:
             fingerprint_match=fingerprint_match,
             locator_results=locator_results,
             message=message,
+            recovery_state=None,
         )
         if persist:
             try:
@@ -154,95 +216,120 @@ class AtlasBrowserRuntimeMixin:
                 report.message = f"{report.message} Persist failed: {exc}"
 
         if relearn_on_degraded and report.status in {"degraded", "stale"}:
-            relearned = await self._learn_site(site, url)
-            if relearned:
-                relearned = await self._admit_learned_schema(url, relearned)
-            if relearned and relearned.get("elements"):
-                self.registry.save_schema(
-                    site,
-                    url,
-                    relearned,
-                    task_key=task_key,
-                    variant_key=variant_key,
-                    tenant_id=tenant_id,
-                    registry_scope="private" if registry_scope == "private" else "public",
-                )
-                refreshed_playbook = self.registry.get_playbook(
-                    site,
-                    url,
-                    task_key=task_key,
-                    variant_key=variant_key,
-                    tenant_id=tenant_id,
-                    registry_scope=registry_scope,
-                )
-                refreshed_schema = self.registry.fetch_schema(
-                    site,
-                    url,
-                    variant_key=variant_key,
-                    tenant_id=tenant_id,
-                    registry_scope=registry_scope,
-                )
-                if refreshed_schema:
-                    refreshed_results, refreshed_fingerprint = await self._validate_elements(
+            acquired, lease = self.registry.start_recovery(
+                site=site,
+                route_key=schema["route_key"],
+                task_key=task_key,
+                variant_key=variant_key,
+                tenant_id=tenant_id,
+                registry_scope=registry_scope,
+                reason=f"validation:{report.status}",
+            )
+            if not acquired:
+                report.recovery_state = "in_progress"
+                report.message = f"{report.message} Recovery already in progress."
+                return report
+            recovery_succeeded = False
+            recovery_failed = False
+            try:
+                relearned = await self._learn_site(site, url)
+                if relearned:
+                    relearned = await self._admit_learned_schema(url, relearned)
+                if relearned and relearned.get("elements"):
+                    self.registry.save_schema(
+                        site,
                         url,
-                        refreshed_schema["elements"],
-                        headless=headless,
+                        relearned,
+                        task_key=task_key,
+                        variant_key=variant_key,
+                        tenant_id=tenant_id,
+                        registry_scope="private" if registry_scope == "private" else "public",
                     )
-                    refreshed_success_count = sum(1 for item in refreshed_results if item.actionable)
-                    refreshed_failure_count = len(refreshed_results) - refreshed_success_count
-                    refreshed_success_rate = refreshed_success_count / len(refreshed_results) if refreshed_results else 0.0
-                    refreshed_validation_count = (
-                        refreshed_playbook.validation_count + 1 if refreshed_playbook else report.validation_count + 1
+                    refreshed_playbook = self.registry.get_playbook(
+                        site,
+                        url,
+                        task_key=task_key,
+                        variant_key=variant_key,
+                        tenant_id=tenant_id,
+                        registry_scope=registry_scope,
                     )
-                    refreshed_stored_fingerprint = refreshed_playbook.fingerprint if refreshed_playbook else None
-                    refreshed_fingerprint_match = (
-                        refreshed_stored_fingerprint == refreshed_fingerprint
-                        if refreshed_stored_fingerprint and refreshed_fingerprint
-                        else None
+                    refreshed_schema = self.registry.fetch_schema(
+                        site,
+                        url,
+                        variant_key=variant_key,
+                        tenant_id=tenant_id,
+                        registry_scope=registry_scope,
                     )
-                    if refreshed_fingerprint_match is False:
-                        refreshed_status = "stale"
-                        refreshed_message = "Automatic relearn completed, but route fingerprint still changed."
-                    else:
-                        refreshed_status = "healthy" if refreshed_failure_count == 0 else "degraded"
-                        refreshed_message = (
-                            "Automatic relearn completed and validation reran."
-                            if refreshed_status == "healthy"
-                            else "Automatic relearn completed, but some locators still failed validation."
+                    if refreshed_schema:
+                        refreshed_results, refreshed_fingerprint = await self._validate_elements(
+                            url,
+                            refreshed_schema["elements"],
+                            headless=headless,
                         )
-                    report = ValidationReport(
-                        site=site,
-                        url=url,
-                        route_key=refreshed_schema["route_key"],
-                        status=refreshed_status,
-                        source="llm_learned",
-                        validation_count=refreshed_validation_count,
-                        success_count=refreshed_success_count,
-                        failure_count=refreshed_failure_count,
-                        success_rate=refreshed_success_rate,
-                        last_validated_at=self._now_iso(),
-                        schema_version=refreshed_playbook.schema_version if refreshed_playbook else None,
-                        stored_fingerprint=refreshed_stored_fingerprint,
-                        current_fingerprint=refreshed_fingerprint,
-                        fingerprint_match=refreshed_fingerprint_match,
-                        locator_results=refreshed_results,
-                        message=refreshed_message,
-                    )
-                    if persist:
-                        try:
-                            self.registry.persist_validation(
-                                site,
-                                url,
-                                report,
-                                task_key=task_key,
-                                variant_key=variant_key,
-                                tenant_id=tenant_id,
-                                registry_scope=registry_scope,
+                        refreshed_success_count = sum(1 for item in refreshed_results if item.actionable)
+                        refreshed_failure_count = len(refreshed_results) - refreshed_success_count
+                        refreshed_success_rate = refreshed_success_count / len(refreshed_results) if refreshed_results else 0.0
+                        refreshed_validation_count = (
+                            refreshed_playbook.validation_count + 1 if refreshed_playbook else report.validation_count + 1
+                        )
+                        refreshed_stored_fingerprint = refreshed_playbook.fingerprint if refreshed_playbook else None
+                        refreshed_fingerprint_match = (
+                            refreshed_stored_fingerprint == refreshed_fingerprint
+                            if refreshed_stored_fingerprint and refreshed_fingerprint
+                            else None
+                        )
+                        if refreshed_fingerprint_match is False:
+                            refreshed_status = "stale"
+                            refreshed_message = "Automatic relearn completed, but route fingerprint still changed."
+                        else:
+                            refreshed_status = "healthy" if refreshed_failure_count == 0 else "degraded"
+                            refreshed_message = (
+                                "Automatic relearn completed and validation reran."
+                                if refreshed_status == "healthy"
+                                else "Automatic relearn completed, but some locators still failed validation."
                             )
-                        except Exception as exc:
-                            report.message = f"{report.message} Persist failed: {exc}"
-            else:
-                report.message = f"{report.message} Automatic relearn failed."
+                        report = ValidationReport(
+                            site=site,
+                            url=url,
+                            route_key=refreshed_schema["route_key"],
+                            status=refreshed_status,
+                            source="llm_learned",
+                            validation_count=refreshed_validation_count,
+                            success_count=refreshed_success_count,
+                            failure_count=refreshed_failure_count,
+                            success_rate=refreshed_success_rate,
+                            last_validated_at=self._now_iso(),
+                            schema_version=refreshed_playbook.schema_version if refreshed_playbook else None,
+                            stored_fingerprint=refreshed_stored_fingerprint,
+                            current_fingerprint=refreshed_fingerprint,
+                            fingerprint_match=refreshed_fingerprint_match,
+                            locator_results=refreshed_results,
+                            message=refreshed_message,
+                            recovery_state="completed",
+                        )
+                        recovery_succeeded = refreshed_status == "healthy"
+                        if persist:
+                            try:
+                                self.registry.persist_validation(
+                                    site,
+                                    url,
+                                    report,
+                                    task_key=task_key,
+                                    variant_key=variant_key,
+                                    tenant_id=tenant_id,
+                                    registry_scope=registry_scope,
+                                )
+                            except Exception as exc:
+                                report.message = f"{report.message} Persist failed: {exc}"
+                else:
+                    recovery_failed = True
+                    report.message = f"{report.message} Automatic relearn failed."
+            finally:
+                if recovery_failed and not report.recovery_state:
+                    report.recovery_state = "failed"
+                elif recovery_succeeded and not report.recovery_state:
+                    report.recovery_state = "completed"
+                self.registry.finish_recovery(lease)
         return report
 
     async def execute(
@@ -867,6 +954,7 @@ Rules:
     # ─────────────────────────────────────────────
     async def _learn_page_from_browser(self, page: Page, site: str, url: str) -> dict | None:
         try:
+            await self._wait_for_page_settle(page)
             snapshot  = await page.accessibility.snapshot(interesting_only=True)
             acc_nodes = []
             def flatten(node, depth=0):
@@ -957,6 +1045,7 @@ Accessibility tree:
                 except Exception:
                     pass
                 await self._stabilize_page(page)
+                await self._wait_for_page_settle(page)
                 for wait_ms in [2000, 2000, 2000]:
                     await page.wait_for_timeout(wait_ms)
                     count = await page.evaluate("() => document.querySelectorAll('a, button').length")
@@ -1057,7 +1146,7 @@ Accessibility tree:
                 await stealth_async(page)
             await page.goto(url, wait_until="networkidle", timeout=30000)
             await self._stabilize_page(page)
-            await page.wait_for_timeout(1000)
+            await self._wait_for_page_settle(page)
             snapshot = await page.accessibility.snapshot(interesting_only=True)
             acc_nodes = []
             def flatten(node, depth=0):
@@ -1192,6 +1281,49 @@ Accessibility tree:
             await page.keyboard.press("Escape")
         except Exception:
             pass
+
+    async def _wait_for_page_settle(
+        self,
+        page: Page,
+        timeout_ms: int = 6000,
+        stable_cycles: int = 2,
+        poll_ms: int = 400,
+    ) -> None:
+        elapsed = 0
+        stable_count = 0
+        previous_signature = None
+        while elapsed < timeout_ms:
+            try:
+                await page.wait_for_load_state("domcontentloaded", timeout=min(1000, timeout_ms))
+            except Exception:
+                pass
+            try:
+                signature = await page.evaluate(
+                    """() => {
+                        const interactiveCount = document.querySelectorAll(
+                            'a[href],button,input,textarea,select,[role=button],[role=link],[role=textbox],[role=combobox]'
+                        ).length;
+                        const textCount = Array.from(document.querySelectorAll('h1,h2,h3,h4,p,li'))
+                            .map((el) => (el.innerText || el.textContent || '').trim())
+                            .filter(Boolean)
+                            .slice(0, 12)
+                            .join('|');
+                        const readyState = document.readyState;
+                        const url = window.location.pathname + window.location.search;
+                        return `${readyState}::${url}::${interactiveCount}::${textCount}`;
+                    }"""
+                )
+            except Exception:
+                signature = None
+            if signature and signature == previous_signature:
+                stable_count += 1
+            else:
+                stable_count = 0
+            previous_signature = signature
+            if stable_count >= stable_cycles:
+                return
+            await page.wait_for_timeout(poll_ms)
+            elapsed += poll_ms
 
     async def _admit_learned_schema(self, url: str, learned: dict | None) -> dict | None:
         if not learned or not learned.get("elements"):

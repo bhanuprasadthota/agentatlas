@@ -111,6 +111,25 @@ class Atlas(AtlasHostedClientMixin, AtlasBrowserRuntimeMixin):
             registry_scope=resolved_registry_scope,
         )
         route_key = (snapshot or {}).get("route_key") or "unknown"
+        snapshot_payload = (snapshot or {}).get("payload") or {}
+        promotion = snapshot_payload.get("promotion") or {}
+        registry_meta = snapshot_payload.get("registry") or {}
+        if (
+            promotion.get("review_status") == "review_required"
+            and registry_meta.get("scope", "public") == "public"
+        ):
+            return SiteSchema(
+                site=site,
+                url=url,
+                route_key=route_key,
+                status="pending_review",
+                confidence=float((snapshot or {}).get("confidence") or 0.0),
+                elements={},
+                source="review_queue",
+                tokens_used=0,
+                message="Schema exists in the public registry but is awaiting review approval.",
+                recovery_state="review_required",
+            )
         if getattr(self.registry, "read_degraded", lambda: False)():
             return SiteSchema(
                 site=site,
