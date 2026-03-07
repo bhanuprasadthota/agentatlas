@@ -7,12 +7,11 @@ name = "agentatlas"
 version = "0.4.0"
 description = "Shared browser interaction schema registry for AI agents. Reduces LLM token usage by 80-100% on known sites."
 readme = "README.md"
-license = "MIT"
+license = {text = "MIT"}
 requires-python = ">=3.10"
 keywords = ["ai", "agents", "browser-automation", "llm", "playwright"]
 classifiers = [
     "Programming Language :: Python :: 3",
-    "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
 ]
 dependencies = [
