@@ -246,7 +246,10 @@ class Atlas:
     # PRIVATE: LLM decides next action
     # ─────────────────────────────────────────────
     async def _decide_action(self, task, current_url, elements, screenshot_base64, history, extracted) -> tuple[dict, int]:
-        history_text   = json.dumps(history[-5:], indent=1) if history else "none"
+        history_text   = json.dumps(history[-8:], indent=1) if history else "none"
+        # summarize what already succeeded
+        done_actions = [h["action"] for h in history if h["action"].get("type") in ["type","click"] and "failed" not in str(h)]
+        done_text = json.dumps(done_actions, indent=1) if done_actions else "none"
         extracted_text = json.dumps(extracted, indent=1) if extracted else "none"
 
         prompt = f"""You are controlling a browser to complete this task: "{task}"
@@ -254,6 +257,8 @@ class Atlas:
 Current URL: {current_url}
 Steps taken so far: {history_text}
 Data extracted so far: {extracted_text}
+Actions already completed successfully: {done_text}
+Actions already completed successfully: {done_text}
 
 Available elements on this page:
 {json.dumps(elements, indent=2)}
@@ -270,9 +275,10 @@ FAILED:  {{"type": "failed",  "reason": "why"}}
 
 Rules:
 - Only use element names that exist in the available elements above
-- If data has already been extracted (check extracted so far), call done immediately
-- If task is to extract data and you see the data, use extract then done
-- Never extract the same element twice
+- Track what actions already succeeded — never repeat a successful type or click
+- If all form fields are filled, click submit
+- If data has already been extracted, call done immediately
+- Never repeat the same action twice
 - Be decisive — pick the single best action
 """
         response = self.client.chat.completions.create(
@@ -357,6 +363,62 @@ Rules:
                 print(f"[AgentAtlas] 👆 Clicked via fallback scan: {best_name}")
                 return True
 
+            # Try submit/button FIRST if element name suggests it
+            submit_words = ["submit", "send", "order", "apply", "continue", "next", "save", "place"]
+            if any(w in element_name.lower() for w in submit_words) or any(w in reason.lower() for w in submit_words):
+                print(f"[AgentAtlas] 🔄 Trying submit button...")
+                try:
+                    await page.locator("button[type=submit]").first.click(timeout=5000)
+                    print(f"[AgentAtlas] 👆 Clicked submit button")
+                    return True
+                except Exception:
+                    pass
+                try:
+                    await page.locator("input[type=submit]").first.click(timeout=5000)
+                    print(f"[AgentAtlas] 👆 Clicked input submit")
+                    return True
+                except Exception:
+                    pass
+                try:
+                    btns = await page.eval_on_selector_all(
+                        "button, input[type=submit]",
+                        "els => els.map(e => ({text: e.innerText || e.value || '', type: e.type}))")
+                    for btn in btns:
+                        t = btn.get("text","").strip()
+                        if t and t.lower() not in ["cancel", "back", "reset"]:
+                            await page.get_by_role("button", name=t).first.click(timeout=3000)
+                            print(f"[AgentAtlas] 👆 Clicked button: {t}")
+                            return True
+                except Exception as e:
+                    print(f"[AgentAtlas] ⚠ Button fallback failed: {e}")
+
+            # Try radio/checkbox by scanning accessibility tree
+            print(f"[AgentAtlas] 🔄 Trying radio/checkbox fallback...")
+            try:
+                snap = await page.accessibility.snapshot(interesting_only=True)
+                keywords = [w.lower() for w in (element_name + " " + reason).replace("_", " ").split() if len(w) > 2]
+                radio_candidates = []
+                def scan_inputs(node):
+                    if not node: return
+                    role = node.get("role", "")
+                    name = node.get("name", "").strip()
+                    if role in ["radio", "checkbox", "option", "menuitemradio", "menuitemcheckbox"]:
+                        score = sum(1 for kw in keywords if kw in name.lower())
+                        if score > 0:
+                            radio_candidates.append((score, role, name))
+                    for child in node.get("children", []):
+                        scan_inputs(child)
+                scan_inputs(snap)
+                radio_candidates.sort(reverse=True)
+                if radio_candidates:
+                    _, best_role, best_name = radio_candidates[0]
+                    print(f"[AgentAtlas] 🎯 Found {best_role}: {best_name}")
+                    await page.get_by_role(best_role, name=best_name).first.click(timeout=5000)
+                    print(f"[AgentAtlas] 👆 Clicked {best_role}: {best_name}")
+                    return True
+            except Exception as e:
+                print(f"[AgentAtlas] ⚠ Radio/checkbox fallback failed: {e}")
+
             # Last resort: click first link whose href looks like a job detail URL
             print(f"[AgentAtlas] 🔄 No keyword match — trying href pattern fallback...")
             job_url_patterns = ["/jobs/", "/job/", "/careers/", "/position/", "/opening/"]
@@ -388,17 +450,57 @@ Rules:
         element_info = elements.get(element_name, {})
         selector     = element_info.get("selector", "")
         sel_type     = element_info.get("type", "")
+
+        # try role+name selector via get_by_role
         try:
             if sel_type == "role" and "+" in selector:
                 role, name = selector.split("+", 1)
                 await page.get_by_role(role, name=name).first.fill(text, timeout=5000)
-                print(f"[AgentAtlas] ⌨ Typed into: {element_name}")
+                print(f"[AgentAtlas] ⌨ Typed into: {element_name} (role)")
                 return True
         except Exception:
             pass
+
+        # try css selector
         try:
-            await page.fill(selector, text, timeout=5000)
-            print(f"[AgentAtlas] ⌨ Typed into: {element_name} (css)")
+            if selector and selector.strip() and not selector.startswith("textbox["):
+                await page.fill(selector, text, timeout=5000)
+                print(f"[AgentAtlas] ⌨ Typed into: {element_name} (css)")
+                return True
+        except Exception:
+            pass
+
+        # FALLBACK: scan accessibility tree for input matching element_name
+        print(f"[AgentAtlas] 🔄 Selector failed — scanning for input field...")
+        try:
+            snapshot  = await page.accessibility.snapshot(interesting_only=True)
+            keywords  = [w.lower() for w in element_name.replace("_", " ").split() if len(w) > 2]
+            candidates = []
+            def scan(node):
+                if not node: return
+                role = node.get("role", "")
+                name = node.get("name", "").strip()
+                if role in ["textbox", "searchbox", "combobox", "spinbutton"]:
+                    score = sum(1 for kw in keywords if kw in name.lower())
+                    candidates.append((score, role, name))
+                for child in node.get("children", []):
+                    scan(child)
+            scan(snapshot)
+            candidates.sort(reverse=True)
+            if candidates:
+                _, best_role, best_name = candidates[0]
+                print(f"[AgentAtlas] 🎯 Found input: {best_role} — {best_name}")
+                await page.get_by_role(best_role, name=best_name).first.fill(text, timeout=5000)
+                print(f"[AgentAtlas] ⌨ Typed into: {best_name}")
+                return True
+        except Exception as e:
+            print(f"[AgentAtlas] ⚠ Type fallback failed: {e}")
+
+        # LAST RESORT: try get_by_label
+        try:
+            label_guess = element_name.replace("_", " ")
+            await page.get_by_label(label_guess, exact=False).first.fill(text, timeout=5000)
+            print(f"[AgentAtlas] ⌨ Typed via label: {label_guess}")
             return True
         except Exception as e:
             print(f"[AgentAtlas] ⚠ Type failed for {element_name}: {e}")
