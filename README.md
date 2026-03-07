@@ -22,27 +22,32 @@ The clearest first use case is job boards:
 
 ## First demo
 
-Run the bundled job-board warm-start example:
+Run the real extraction demo:
 
 ```bash
-python3 examples/job_board_warm_start.py
+python3 examples/extract_job_listings.py
 ```
 
-The example defaults to `private` scope with a local demo tenant so the second run can actually warm-hit immediately without waiting for public review approval on job-board domains.
+This is the primary onboarding path now. It does two things:
 
-If you already have the hosted API running, use the hosted variant instead:
+1. loads known Greenhouse page anchors from AgentAtlas
+2. extracts real job listings deterministically from the page DOM
+
+The example defaults to `private` scope with a local demo tenant so the registry can warm-hit immediately without waiting for public review approval on job-board domains.
+
+If you already have the hosted API running, use the explicit hosted variant instead:
 
 ```bash
 export AGENTATLAS_API_URL=http://localhost:8000
 export AGENTATLAS_API_KEY=your-api-key
-python3 examples/hosted_api_warm_start.py
+python3 examples/extract_job_listings_hosted_api.py
 ```
 
-By default it targets a public Greenhouse board. You can switch boards or force a specific URL:
+By default it targets the Anthropic Greenhouse board. You can switch boards or force a specific URL:
 
 ```bash
-AGENTATLAS_DEMO_BOARD=lever python3 examples/job_board_warm_start.py
-AGENTATLAS_DEMO_URL=https://boards.greenhouse.io/anthropic python3 examples/job_board_warm_start.py
+AGENTATLAS_DEMO_URL=https://boards.greenhouse.io/openai python3 examples/extract_job_listings.py
+AGENTATLAS_DEMO_MAX_JOBS=10 python3 examples/extract_job_listings.py
 ```
 
 Relevant knobs:
@@ -54,33 +59,62 @@ AGENTATLAS_DEMO_TENANT_ID=demo-local
 
 What it does:
 
-1. calls `get_schema()` for a job board page
-2. calls `get_schema()` for the same page again
-3. fetches the current playbook
-4. prints whether the second lookup was a warm registry hit
+1. loads the route schema from AgentAtlas
+2. shows whether that lookup was `llm_learned` or `registry`
+3. opens the board page in Playwright
+4. verifies a few known anchors from AgentAtlas memory
+5. extracts real job rows without using an LLM
 
 Example output shape:
 
 ```json
 {
   "site": "boards.greenhouse.io",
-  "registry_scope": "private",
-  "warm_hit": true,
-  "element_count": 6,
-  "first_lookup": {
-    "source": "llm_learned",
-    "tokens_used": 1432
-  },
-  "second_lookup": {
+  "registry": {
     "source": "registry",
     "tokens_used": 0
-  }
+  },
+  "extraction": {
+    "job_count": 20
+  },
+  "warm_hit": true,
+  "jobs": [
+    {"title": "Forward Deployed Engineer", "department": "Engineering"}
+  ]
 }
 ```
 
-That is the core product value: repeated page understanding becomes shared memory instead of repeated LLM spend.
+That is the core product value in useful form: AgentAtlas handles repeated page understanding, and your pipeline gets real extracted records.
 
 If you switch the demo to `public` scope on a sensitive domain like Greenhouse, new learns will enter `review_required` and the second run will not warm-hit until approved. That is expected trust behavior, not a demo bug.
+
+## Real extraction demo
+
+AgentAtlas memory anchors the page. Deterministic DOM parsing extracts the data.  
+No LLM needed after the first run.
+
+```bash
+python3 examples/extract_job_listings.py
+```
+
+```text
+Step 1 - loading UI anchors from registry...
+  source      : registry
+  tokens_used : 0
+  anchors     : ['office_combobox', 'job_search_input', 'create_alert_link', 'department_combobox']
+  elapsed     : 497ms
+  Warm hit - UI anchors loaded from memory, 0 LLM tokens used
+
+Step 2 - extracting job listings from page...
+  Anchor verification: 3/3 known elements present
+  Jobs extracted : 20
+  Elapsed        : 4318ms
+
+  1. External Affairs, Brussels - Brussels, Belgium
+  2. External Affairs - Germany - Munich, Germany
+  3. Geopolitics Analyst, Policy - San Francisco, CA
+  ... and 17 more
+```
 
 ## Product focus
 
@@ -121,7 +155,7 @@ If you want to use the hosted API instead of direct Supabase/OpenAI access:
 ```bash
 export AGENTATLAS_API_URL=https://your-agentatlas-api.example.com
 export AGENTATLAS_API_KEY=your-api-key
-python3 examples/hosted_api_warm_start.py
+python3 examples/extract_job_listings_hosted_api.py
 ```
 
 ## Core API
@@ -167,20 +201,19 @@ async def main():
     atlas = Atlas()
     url = "https://boards.greenhouse.io/anthropic"
 
-    first = await atlas.get_schema(site="boards.greenhouse.io", url=url)
-    second = await atlas.get_schema(site="boards.greenhouse.io", url=url)
-    playbook = await atlas.get_playbook(site="boards.greenhouse.io", url=url)
+    schema = await atlas.get_schema(site="boards.greenhouse.io", url=url)
+    print("schema source:", schema.source)
+    print("tokens:", schema.tokens_used)
+    print("anchors:", sorted((schema.elements or {}).keys()))
 
-    print("first:", first.source, first.tokens_used)
-    print("second:", second.source, second.tokens_used)
-    print("warm hit:", second.source == "registry" and second.tokens_used == 0)
-    print("tracked elements:", sorted((playbook.elements or {}).keys()))
+    # After the page is known, use deterministic DOM selectors for the job rows.
+    # See examples/extract_job_listings.py for the full version.
 
 
 asyncio.run(main())
 ```
 
-For a pipeline that revisits the same boards every day, that warm-start behavior is the whole point.
+For a pipeline that revisits the same boards every day, that warm-start plus deterministic extraction path is the whole point.
 
 `Atlas.execute()` is intentionally no longer part of the main product surface. If you still need browser execution for operator workflows or cold-start collection, use [`AgentExecutor`](/Users/bhanuprasadthota/Desktop/AgentAtlas/agentatlas/executor.py:1) explicitly.
 
