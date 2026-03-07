@@ -219,6 +219,11 @@ class Atlas:
                     if success:
                         await page.wait_for_timeout(1000)
 
+                elif action["type"] == "select":
+                    success = await self._do_select(page, action, elements)
+                    if success:
+                        await page.wait_for_timeout(500)
+
                 elif action["type"] == "extract":
                     data = await self._do_extract(page, action, elements)
                     if data:
@@ -275,8 +280,9 @@ FAILED:  {{"type": "failed",  "reason": "why"}}
 
 Rules:
 - Only use element names that exist in the available elements above
-- Track what actions already succeeded — never repeat a successful type or click
-- If all form fields are filled, click submit
+- Track completed actions — never repeat a successful type, click or select
+- For forms: fill ALL fields before submitting — check history to confirm every field is done
+- Only submit when ALL required fields in the task are filled
 - If data has already been extracted, call done immediately
 - Never repeat the same action twice
 - Be decisive — pick the single best action
@@ -363,7 +369,35 @@ Rules:
                 print(f"[AgentAtlas] 👆 Clicked via fallback scan: {best_name}")
                 return True
 
-            # Try submit/button FIRST if element name suggests it
+            # Try checkbox FIRST before anything else
+            checkbox_words = ["check", "topping", "option", "agree", "accept", "bacon", "cheese", "mushroom", "onion", "select"]
+            if any(w in element_name.lower() for w in checkbox_words) or any(w in reason.lower() for w in checkbox_words):
+                try:
+                    snap = await page.accessibility.snapshot(interesting_only=True)
+                    keywords = [w.lower() for w in (element_name + " " + reason).replace("_"," ").split() if len(w) > 2]
+                    cb_candidates = []
+                    def scan_cb(node):
+                        if not node: return
+                        role = node.get("role", "")
+                        name = node.get("name", "").strip()
+                        if role in ["checkbox", "menuitemcheckbox"]:
+                            score = sum(1 for kw in keywords if kw in name.lower())
+                            if score > 0:
+                                cb_candidates.append((score, name))
+                        for child in node.get("children", []):
+                            scan_cb(child)
+                    scan_cb(snap)
+                    cb_candidates.sort(reverse=True)
+                    if cb_candidates:
+                        best = cb_candidates[0][1]
+                        print(f"[AgentAtlas] 🎯 Found checkbox: {best}")
+                        await page.get_by_role("checkbox", name=best).first.check(timeout=5000)
+                        print(f"[AgentAtlas] ☑ Checked: {best}")
+                        return True
+                except Exception as e:
+                    print(f"[AgentAtlas] ⚠ Checkbox fallback failed: {e}")
+
+            # Try submit/button if element name suggests it
             submit_words = ["submit", "send", "order", "apply", "continue", "next", "save", "place"]
             if any(w in element_name.lower() for w in submit_words) or any(w in reason.lower() for w in submit_words):
                 print(f"[AgentAtlas] 🔄 Trying submit button...")
@@ -505,6 +539,96 @@ Rules:
         except Exception as e:
             print(f"[AgentAtlas] ⚠ Type failed for {element_name}: {e}")
             return False
+
+    # ─────────────────────────────────────────────
+    # PRIVATE: select dropdown option
+    # ─────────────────────────────────────────────
+    async def _do_select(self, page: Page, action: dict, elements: dict) -> bool:
+        element_name = action.get("element", "")
+        value        = action.get("value", "") or action.get("text", "")
+        element_info = elements.get(element_name, {})
+        selector     = element_info.get("selector", "")
+        sel_type     = element_info.get("type", "")
+
+        # try role-based combobox
+        try:
+            if sel_type == "role" and "+" in selector:
+                role, name = selector.split("+", 1)
+                await page.get_by_role(role, name=name).first.select_option(label=value, timeout=5000)
+                print(f"[AgentAtlas] 🔽 Selected: {value} in {element_name} (role)")
+                return True
+        except Exception:
+            pass
+
+        # try css select_option
+        try:
+            if selector and selector.strip():
+                await page.select_option(selector, label=value, timeout=5000)
+                print(f"[AgentAtlas] 🔽 Selected: {value} in {element_name} (css)")
+                return True
+        except Exception:
+            pass
+
+        # FALLBACK: scan accessibility tree for combobox/listbox matching element name
+        print(f"[AgentAtlas] 🔄 Scanning for dropdown...")
+        try:
+            snapshot  = await page.accessibility.snapshot(interesting_only=True)
+            keywords  = [w.lower() for w in element_name.replace("_", " ").split() if len(w) > 2]
+            candidates = []
+            def scan(node):
+                if not node: return
+                role = node.get("role", "")
+                name = node.get("name", "").strip()
+                if role in ["combobox", "listbox", "option"]:
+                    score = sum(1 for kw in keywords if kw in name.lower())
+                    candidates.append((score, role, name))
+                for child in node.get("children", []):
+                    scan(child)
+            scan(snapshot)
+            candidates.sort(reverse=True)
+            if candidates:
+                _, best_role, best_name = candidates[0]
+                print(f"[AgentAtlas] 🎯 Found dropdown: {best_role} — {best_name}")
+                # try select_option by label
+                try:
+                    await page.get_by_role(best_role, name=best_name).first.select_option(label=value, timeout=5000)
+                    print(f"[AgentAtlas] 🔽 Selected: {value}")
+                    return True
+                except Exception:
+                    pass
+                # try selecting by finding the <select> element near a matching label
+                try:
+                    await page.get_by_label(best_name, exact=False).first.select_option(label=value, timeout=5000)
+                    print(f"[AgentAtlas] 🔽 Selected via label: {value}")
+                    return True
+                except Exception:
+                    pass
+        except Exception as e:
+            print(f"[AgentAtlas] ⚠ Dropdown scan failed: {e}")
+
+        # LAST RESORT: try all <select> elements on page
+        print(f"[AgentAtlas] 🔄 Trying all select elements...")
+        try:
+            selects = await page.eval_on_selector_all(
+                "select",
+                "els => els.map(e => ({id: e.id, name: e.name, options: Array.from(e.options).map(o => o.text)}))")
+            keywords = [w.lower() for w in element_name.replace("_"," ").split() if len(w) > 2]
+            for sel in selects:
+                sel_name  = (sel.get("name","") + " " + sel.get("id","")).lower()
+                sel_score = sum(1 for kw in keywords if kw in sel_name)
+                # check if value is in options
+                opts = [o.lower() for o in sel.get("options", [])]
+                if value.lower() in opts or sel_score > 0:
+                    sel_id = sel.get("name", sel.get("id", ""))
+                    locator = "select[name='" + sel_id + "']"
+                    await page.select_option(locator, label=value, timeout=5000)
+                    print(f"[AgentAtlas] 🔽 Selected via select scan: {value}")
+                    return True
+        except Exception as e:
+            print(f"[AgentAtlas] ⚠ Select scan failed: {e}")
+
+        print(f"[AgentAtlas] ⚠ Dropdown failed for {element_name}")
+        return False
 
     # ─────────────────────────────────────────────
     # PRIVATE: extract action
