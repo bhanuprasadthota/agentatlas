@@ -33,6 +33,9 @@ Issues = "https://github.com/bhanuprasadthota/agentatlas/issues"
 where = ["."]
 include = ["agentatlas*"]
 
+[tool.setuptools.package-data]
+"agentatlas.ui" = ["static/*.css", "static/*.js"]
+
 [tool.pytest.ini_options]
 python_files = ["test_*.py"]
 testpaths = ["."]
