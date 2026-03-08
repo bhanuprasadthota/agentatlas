@@ -54,7 +54,7 @@ class RecoveryLeaseTest(unittest.TestCase):
         self.assertTrue(acquired_third)
 
     def test_version_contract_is_exposed(self):
-        self.assertEqual(SDK_VERSION, "0.3.1")
+        self.assertEqual(SDK_VERSION, "0.4.0")
         self.assertEqual(API_VERSION, "v1")
         self.assertIn("Atlas.get_schema", STABLE_SURFACE)
 
