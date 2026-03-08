@@ -1078,18 +1078,31 @@ Accessibility tree:
                 return {"acc_nodes": acc_nodes, "screenshot_base64": screenshot_base64}
         except Exception as e:
             self.logger.info(f"[AgentAtlas] Crawl error: {e}")
-            return {}
+            return {"error": str(e)}
 
     # ─────────────────────────────────────────────
     # PRIVATE: learn site (launches fresh browser)
     # ─────────────────────────────────────────────
     async def _learn_site(self, site: str, url: str) -> dict | None:
         crawled           = await self._crawl_page(url)
+        crawl_error       = crawled.get("error")
+        if crawl_error:
+            return {
+                "route_key": "unknown",
+                "elements": {},
+                "tokens_used": 0,
+                "error": f"Crawl failed: {crawl_error}",
+            }
         acc_nodes         = crawled.get("acc_nodes", [])
         screenshot_base64 = crawled.get("screenshot_base64", "")
         if len(acc_nodes) < 3:
             self.logger.info(f"[AgentAtlas] ❌ Too few nodes ({len(acc_nodes)}) — page may be blocked")
-            return None
+            return {
+                "route_key": "unknown",
+                "elements": {},
+                "tokens_used": 0,
+                "error": f"Too few nodes ({len(acc_nodes)}) — page may be blocked or empty.",
+            }
         self.logger.info(f"[AgentAtlas] 🔍 {len(acc_nodes)} nodes + screenshot → GPT-4o Vision...")
         prompt = f"""Build a browser automation schema for {site}. Page: {url}
 

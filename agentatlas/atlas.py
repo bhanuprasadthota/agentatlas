@@ -207,6 +207,19 @@ class Atlas(AtlasHostedClientMixin, AtlasBrowserRuntimeMixin):
                     message="Could not learn site. Page may be blocked or empty.",
                     recovery_state="failed",
                 )
+            if learned.get("error"):
+                return SiteSchema(
+                    site=site,
+                    url=url,
+                    route_key=learned.get("route_key", route_key),
+                    status="not_found",
+                    confidence=0.0,
+                    elements={},
+                    source="not_found",
+                    tokens_used=learned.get("tokens_used", 0),
+                    message=learned["error"],
+                    recovery_state="failed",
+                )
             learned = await self._admit_learned_schema(url, learned)
             if not learned or not learned.get("elements"):
                 return SiteSchema(
