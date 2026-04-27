@@ -16,6 +16,40 @@ from agentatlas.registry import build_route_fingerprint
 
 
 class AtlasBrowserRuntimeMixin:
+    async def _accessibility_snapshot(self, page: Page) -> dict:
+        """Compatibility wrapper: page.accessibility was removed in Playwright ≥ 1.47."""
+        try:
+            return await page.accessibility.snapshot(interesting_only=True)
+        except AttributeError:
+            return await page.evaluate("""() => {
+                function getRole(el) {
+                    if (el.getAttribute && el.getAttribute('role')) return el.getAttribute('role');
+                    const map = {A:'link',BUTTON:'button',INPUT:'textbox',SELECT:'combobox',
+                                 TEXTAREA:'textbox',H1:'heading',H2:'heading',H3:'heading',
+                                 H4:'heading',NAV:'navigation',MAIN:'main',FORM:'form',
+                                 LI:'listitem',UL:'list',OL:'list'};
+                    return map[el.tagName] || '';
+                }
+                function getName(el) {
+                    return (el.getAttribute('aria-label') || el.getAttribute('placeholder') ||
+                            el.getAttribute('title') || el.getAttribute('alt') ||
+                            (el.textContent || '').trim()).slice(0, 120);
+                }
+                function walk(el, depth) {
+                    if (!el || depth > 10) return null;
+                    const role = getRole(el);
+                    const name = getName(el);
+                    const children = [];
+                    for (const child of (el.children || [])) {
+                        const c = walk(child, depth + 1);
+                        if (c) children.push(c);
+                    }
+                    if (!role && !name && children.length === 0) return null;
+                    return {role: role, name: name, children: children};
+                }
+                return walk(document.body, 0);
+            }""")
+
     async def _validate_direct(
         self,
         site: str,
@@ -575,7 +609,7 @@ Rules:
         # FALLBACK: scan accessibility tree for any link matching element_name or reason
         self.logger.info(f"[AgentAtlas] 🔄 Registry selector failed — scanning page for clickable link...")
         try:
-            snapshot = await page.accessibility.snapshot(interesting_only=True)
+            snapshot = await self._accessibility_snapshot(page)
             candidates = []
             keywords   = [w.lower() for w in (element_name + " " + reason).split() if len(w) > 3]
             skip = ["skip", "login", "cookie", "privacy", "download", "facebook", "twitter", "instagram", "footer", "newsletter", "linkedin", "youtube", "app store", "google play", "read more about", "join us", "amazon jobs home"]
@@ -604,7 +638,7 @@ Rules:
             checkbox_words = ["check", "topping", "option", "agree", "accept", "bacon", "cheese", "mushroom", "onion", "select"]
             if any(w in element_name.lower() for w in checkbox_words) or any(w in reason.lower() for w in checkbox_words):
                 try:
-                    snap = await page.accessibility.snapshot(interesting_only=True)
+                    snap = await self._accessibility_snapshot(page)
                     keywords = [w.lower() for w in (element_name + " " + reason).replace("_"," ").split() if len(w) > 2]
                     cb_candidates = []
                     def scan_cb(node):
@@ -660,7 +694,7 @@ Rules:
             # Try radio/checkbox by scanning accessibility tree
             self.logger.info(f"[AgentAtlas] 🔄 Trying radio/checkbox fallback...")
             try:
-                snap = await page.accessibility.snapshot(interesting_only=True)
+                snap = await self._accessibility_snapshot(page)
                 keywords = [w.lower() for w in (element_name + " " + reason).replace("_", " ").split() if len(w) > 2]
                 radio_candidates = []
                 def scan_inputs(node):
@@ -761,7 +795,7 @@ Rules:
         # FALLBACK: scan accessibility tree for input matching element_name
         self.logger.info(f"[AgentAtlas] 🔄 Selector failed — scanning for input field...")
         try:
-            snapshot  = await page.accessibility.snapshot(interesting_only=True)
+            snapshot  = await self._accessibility_snapshot(page)
             keywords  = [w.lower() for w in normalized_name.split() if len(w) > 2]
             candidates = []
             def scan(node):
@@ -838,7 +872,7 @@ Rules:
         # FALLBACK: scan accessibility tree for combobox/listbox matching element name
         self.logger.info(f"[AgentAtlas] 🔄 Scanning for dropdown...")
         try:
-            snapshot  = await page.accessibility.snapshot(interesting_only=True)
+            snapshot  = await self._accessibility_snapshot(page)
             keywords  = [w.lower() for w in element_name.replace("_", " ").split() if len(w) > 2]
             candidates = []
             def scan(node):
@@ -928,7 +962,7 @@ Rules:
         # fallback: extract all visible links and headings from page (accessibility tree)
         self.logger.info(f"[AgentAtlas] 🔄 Selector failed — using accessibility tree fallback")
         try:
-            snapshot = await page.accessibility.snapshot(interesting_only=True)
+            snapshot = await self._accessibility_snapshot(page)
             results = []
             skip_phrases = ["skip to", "join us on", "download", "cookie", "privacy", "legal", "impressum", "newsletter", "instagram", "twitter", "facebook", "linkedin", "app store", "google play", "read more about"]
             def collect(node):
@@ -955,7 +989,7 @@ Rules:
     async def _learn_page_from_browser(self, page: Page, site: str, url: str) -> dict | None:
         try:
             await self._wait_for_page_settle(page)
-            snapshot  = await page.accessibility.snapshot(interesting_only=True)
+            snapshot  = await self._accessibility_snapshot(page)
             acc_nodes = []
             def flatten(node, depth=0):
                 if not node:
@@ -1056,7 +1090,7 @@ Accessibility tree:
                     if count > 10:
                         break
                 self.logger.info(f"[AgentAtlas] 📋 Capturing accessibility tree...")
-                snapshot  = await page.accessibility.snapshot(interesting_only=True)
+                snapshot  = await self._accessibility_snapshot(page)
                 acc_nodes = []
                 def flatten(node, depth=0):
                     if not node: return
@@ -1163,7 +1197,7 @@ Accessibility tree:
             await page.goto(url, wait_until="networkidle", timeout=30000)
             await self._stabilize_page(page)
             await self._wait_for_page_settle(page)
-            snapshot = await page.accessibility.snapshot(interesting_only=True)
+            snapshot = await self._accessibility_snapshot(page)
             acc_nodes = []
             def flatten(node, depth=0):
                 if not node:
