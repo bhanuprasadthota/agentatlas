@@ -138,10 +138,10 @@ BENCHMARK_WORKFLOWS = [
         category="content_page",
     ),
     BenchmarkWorkflow(
-        name="reddit_search",
-        site="www.reddit.com",
-        url="https://www.reddit.com/search/?q=browser+automation&type=link",
-        notes="JS-rendered search results page; tests delayed hydration and repeated post cards.",
+        name="lobsters",
+        site="lobste.rs",
+        url="https://lobste.rs/",
+        notes="HN-style link aggregator; minimal JS, stable HTML, good delayed_hydration alternative to Reddit.",
         category="delayed_hydration",
     ),
 ]

@@ -27,17 +27,31 @@ AgentAtlas eliminates that. The second run is always free.
 
 ## Benchmark results
 
-13 workflows across 7 page categories, run weekly via GitHub Actions.
+13 workflows across 7 page categories — [full results](benchmarks/RESULTS.md) · [methodology](BENCHMARKS.md)
 
 | Metric | Result |
 |--------|--------|
-| Warm registry hit rate | **100%** |
-| Second-run tokens | **0** for all workflows |
-| Cold start tokens | 800–2,400 depending on page complexity |
-| Token reduction (warm vs cold) | **80–100%** |
-| Warm start latency | 50–500ms |
+| Warm registry hits | **11/13 (84%)** — 2 pending review queue |
+| Warm-start tokens | **0** for all warm hits |
+| Cold-start tokens | 644–3,569 depending on page complexity |
+| Token reduction | **100%** on warm path |
+| Warm start latency | 3–22s (browser validation included) |
 
-See [BENCHMARKS.md](BENCHMARKS.md) for full methodology, per-workflow breakdown, and instructions for running the suite locally.
+**Per-workflow (latest run 2026-04-27):**
+
+| Workflow | Category | Warm hit | Cold tokens |
+|----------|----------|:--------:|-------------|
+| `httpbin_form` | dynamic_form | ✅ | already known |
+| `github_login` | auth_wall | ✅ | already known |
+| `books_listing` | repeated_labels | ✅ | already known |
+| `quotes_js` | delayed_hydration | ✅ | already known |
+| `hn_frontpage` | repeated_labels | ✅ | already known |
+| `wikipedia_article` | content_page | ✅ | already known |
+| `arxiv_abstract` | content_page | ✅ | 3,399 (first run) |
+| `pypi_package` | content_page | ✅ | 3,569 (first run) |
+| `lever_jobs` | job_board | ⏳ review | 644 (first run) |
+
+See [benchmarks/RESULTS.md](benchmarks/RESULTS.md) for the full table with validation status and elapsed times.
 
 ---
 
