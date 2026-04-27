@@ -1,0 +1,100 @@
+name: Benchmark Suite
+
+on:
+  schedule:
+    # Every Monday at 08:00 UTC
+    - cron: "0 8 * * 1"
+  workflow_dispatch:
+    inputs:
+      suite:
+        description: "Suite name"
+        required: false
+        default: "warm_start_reliability"
+
+jobs:
+  run-benchmarks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          playwright install chromium --with-deps
+
+      - name: Run benchmark suite
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          AGENTATLAS_RUN_INTEGRATION: "1"
+          AGENTATLAS_BENCHMARK_OUTPUT: "benchmarks/latest.json"
+        run: |
+          mkdir -p benchmarks
+          python3 test_execute.py
+
+      - name: Check for regressions
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: python3 compare_benchmark_runs.py || true
+
+      - name: Generate benchmark summary
+        run: |
+          python3 - <<'EOF'
+          import json, datetime, pathlib
+
+          data = json.loads(pathlib.Path("benchmarks/latest.json").read_text())
+          total = len(data)
+          warm = sum(1 for r in data if r.get("warm_registry_hit"))
+          healthy = sum(1 for r in data if r.get("validation_status") == "healthy")
+          avg_ms = int(sum(r.get("elapsed_ms", 0) for r in data) / max(total, 1))
+          run_at = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+
+          rows = []
+          for r in data:
+              status_icon = "✅" if r.get("warm_registry_hit") else "❌"
+              val_icon = "✅" if r.get("validation_status") == "healthy" else "⚠️"
+              rows.append(
+                  f"| {r['name']} | {r['category']} | {status_icon} | {val_icon} | "
+                  f"{r.get('second_tokens', 0)} | {r.get('elapsed_ms', 0)}ms |"
+              )
+
+          md = f"""# Benchmark Results
+
+          > Last run: **{run_at}**
+
+          | Metric | Value |
+          |--------|-------|
+          | Workflows | {total} |
+          | Warm registry hits | {warm}/{total} ({int(warm/max(total,1)*100)}%) |
+          | Healthy validations | {healthy}/{total} |
+          | Avg elapsed | {avg_ms}ms |
+
+          ## Per-workflow results
+
+          | Workflow | Category | Warm hit | Validation | 2nd-run tokens | Elapsed |
+          |----------|----------|----------|------------|----------------|---------|
+          """ + "\n".join(rows)
+
+          pathlib.Path("benchmarks/RESULTS.md").write_text(md)
+          print(md)
+          EOF
+
+      - name: Commit benchmark results
+        run: |
+          git config user.name "Bhanu Prasad Thota"
+          git config user.email "thotabhanuprasad2708@gmail.com"
+          git add benchmarks/
+          git diff --cached --quiet || git commit -m "chore: update benchmark results $(date -u +%Y-%m-%d)"
+          git push

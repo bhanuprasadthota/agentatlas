@@ -1,153 +1,45 @@
 # AgentAtlas
 
-**Shared web interaction memory with validation.**
+[![Tests](https://github.com/bhanuprasadthota/agentatlas/actions/workflows/test.yml/badge.svg)](https://github.com/bhanuprasadthota/agentatlas/actions/workflows/test.yml)
+[![Benchmarks](https://github.com/bhanuprasadthota/agentatlas/actions/workflows/benchmark.yml/badge.svg)](https://github.com/bhanuprasadthota/agentatlas/actions/workflows/benchmark.yml)
+[![PyPI](https://img.shields.io/pypi/v/agentatlas)](https://pypi.org/project/agentatlas/)
+[![Python](https://img.shields.io/pypi/pyversions/agentatlas)](https://pypi.org/project/agentatlas/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-AgentAtlas is the registry layer for browser agents. It learns stable page locators once, stores them as reusable schemas/playbooks, and validates them over time so other agents can reuse web interaction memory instead of repeatedly perceiving the same pages.
+**Shared web interaction memory for AI agents. Learn a page once, reuse it everywhere at 0 tokens.**
 
-## Why install it
+AgentAtlas is the registry layer for browser agents. It learns stable page locators once, stores them as reusable schemas, and validates them over time — so any agent can reuse that memory instead of paying repeated LLM perception costs on the same pages.
 
-If you scrape or automate the same web route more than once, AgentAtlas gives you a reusable memory layer for that route.
-
-Typical pattern:
-
-- first run: learn a job board page and pay the perception cost once
-- later runs: hit the registry and reuse the learned locators with `0` lookup tokens
-- over time: validate, stale-detect, review, and repair the locator set instead of relearning from scratch
-
-The clearest first use case is job boards:
-
-- Greenhouse boards
-- Lever boards
-- recruiting detail pages that your pipeline revisits every day
-
-## First demo
-
-Run the real extraction demo:
-
-```bash
-python3 examples/extract_job_listings.py
+```
+Cold page → LLM learns locators → saved to registry (once)
+Warm page → registry hit → 0 tokens, milliseconds ✓
 ```
 
-Or try the second supported vertical:
+---
 
-```bash
-python3 examples/extract_product_cards.py
-```
+## Why this matters
 
-This is the primary onboarding path now. It does two things:
+Every browser agent re-perceives the same pages on every run. A pipeline that hits 10 job boards daily burns ~16,000 LLM tokens/day just on repeated DOM understanding — work that was already done the run before.
 
-1. loads known Greenhouse page anchors from AgentAtlas
-2. extracts real job listings deterministically from the page DOM
+AgentAtlas eliminates that. The second run is always free.
 
-The example defaults to `private` scope with a local demo tenant so the registry can warm-hit immediately without waiting for public review approval on job-board domains.
+---
 
-If you already have the hosted API running, use the explicit hosted variant instead:
+## Benchmark results
 
-```bash
-export AGENTATLAS_API_URL=http://localhost:8000
-export AGENTATLAS_API_KEY=your-api-key
-python3 examples/extract_job_listings_hosted_api.py
-```
+13 workflows across 7 page categories, run weekly via GitHub Actions.
 
-By default it targets the Anthropic Greenhouse board. You can switch boards or force a specific URL:
+| Metric | Result |
+|--------|--------|
+| Warm registry hit rate | **100%** |
+| Second-run tokens | **0** for all workflows |
+| Cold start tokens | 800–2,400 depending on page complexity |
+| Token reduction (warm vs cold) | **80–100%** |
+| Warm start latency | 50–500ms |
 
-```bash
-AGENTATLAS_DEMO_URL=https://boards.greenhouse.io/openai python3 examples/extract_job_listings.py
-AGENTATLAS_DEMO_MAX_JOBS=10 python3 examples/extract_job_listings.py
-```
+See [BENCHMARKS.md](BENCHMARKS.md) for full methodology, per-workflow breakdown, and instructions for running the suite locally.
 
-Relevant knobs:
-
-```bash
-AGENTATLAS_DEMO_REGISTRY_SCOPE=private
-AGENTATLAS_DEMO_TENANT_ID=demo-local
-```
-
-What it does:
-
-1. loads the route schema from AgentAtlas
-2. shows whether that lookup was `llm_learned` or `registry`
-3. opens the board page in Playwright
-4. verifies a few known anchors from AgentAtlas memory
-5. extracts real job rows without using an LLM
-
-Example output shape:
-
-```json
-{
-  "site": "boards.greenhouse.io",
-  "registry": {
-    "source": "registry",
-    "tokens_used": 0
-  },
-  "extraction": {
-    "job_count": 20
-  },
-  "warm_hit": true,
-  "jobs": [
-    {"title": "Forward Deployed Engineer", "department": "Engineering"}
-  ]
-}
-```
-
-That is the core product value in useful form: AgentAtlas handles repeated page understanding, and your pipeline gets real extracted records.
-
-If you switch the demo to `public` scope on a sensitive domain like Greenhouse, new learns will enter `review_required` and the second run will not warm-hit until approved. That is expected trust behavior, not a demo bug.
-
-## Real extraction demo
-
-AgentAtlas memory anchors the page. Deterministic DOM parsing extracts the data.  
-No LLM needed after the first run.
-
-```bash
-python3 examples/extract_job_listings.py
-```
-
-```text
-Step 1 - loading UI anchors from registry...
-  source      : registry
-  tokens_used : 0
-  anchors     : ['office_combobox', 'job_search_input', 'create_alert_link', 'department_combobox']
-  elapsed     : 497ms
-  Warm hit - UI anchors loaded from memory, 0 LLM tokens used
-
-Step 2 - extracting job listings from page...
-  Anchor verification: 3/3 known elements present
-  Jobs extracted : 20
-  Elapsed        : 4318ms
-
-  1. External Affairs, Brussels - Brussels, Belgium
-  2. External Affairs - Germany - Munich, Germany
-  3. Geopolitics Analyst, Policy - San Francisco, CA
-  ... and 17 more
-```
-
-## Product focus
-
-- Shared schema registry for web pages and routes
-- Locator memory that can be reused across agents and teams
-- Validation metadata so consumers can trust freshness and success rate
-- Optional learning path for cold-start pages
-
-## Module layout
-
-The SDK is now split by responsibility:
-
-- [`agentatlas/atlas.py`](/Users/bhanuprasadthota/Desktop/AgentAtlas/agentatlas/atlas.py): main facade and direct/hosted dispatch
-- [`agentatlas/client.py`](/Users/bhanuprasadthota/Desktop/AgentAtlas/agentatlas/client.py): hosted API client, retries, typed response parsing
-- [`agentatlas/browser_runtime.py`](/Users/bhanuprasadthota/Desktop/AgentAtlas/agentatlas/browser_runtime.py): browser learning, validation, and execution runtime
-- [`agentatlas/executor.py`](/Users/bhanuprasadthota/Desktop/AgentAtlas/agentatlas/executor.py): explicit browser execution tooling for internal/operator use
-- [`agentatlas/registry.py`](/Users/bhanuprasadthota/Desktop/AgentAtlas/agentatlas/registry.py): playbook persistence and route lookup
-- [`agentatlas/registry_quality.py`](/Users/bhanuprasadthota/Desktop/AgentAtlas/agentatlas/registry_quality.py): trust, normalization, scope conflict logic
-- [`agentatlas/registry_review.py`](/Users/bhanuprasadthota/Desktop/AgentAtlas/agentatlas/registry_review.py): review queue, audit, promotion, route diffs
-- [`agentatlas/registry_benchmarks.py`](/Users/bhanuprasadthota/Desktop/AgentAtlas/agentatlas/registry_benchmarks.py): benchmark history and scheduled revalidation candidates
-
-## How it works
-
-```text
-Cold page -> learn schema -> save locators -> validate over time
-Warm page -> fetch trusted locators -> skip repeated perception cost
-```
+---
 
 ## Install
 
@@ -156,13 +48,44 @@ pip install agentatlas
 playwright install chromium
 ```
 
-If you want to use the hosted API instead of direct Supabase/OpenAI access:
+---
+
+## Quick start (5 minutes to first warm hit)
 
 ```bash
-export AGENTATLAS_API_URL=https://your-agentatlas-api.example.com
-export AGENTATLAS_API_KEY=your-api-key
-python3 examples/extract_job_listings_hosted_api.py
+# 1. Set credentials
+export SUPABASE_URL=https://your-project.supabase.co
+export SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
+export OPENAI_API_KEY=your-openai-key
+
+# 2. Run any extraction demo — first run learns the page, second run is 0 tokens
+python3 examples/extract_job_listings.py       # Greenhouse job boards
+python3 examples/extract_product_cards.py      # E-commerce product listings
+python3 examples/extract_hn_posts.py           # Hacker News front page
+python3 examples/extract_wikipedia.py          # Wikipedia articles
+python3 examples/extract_lever_jobs.py         # Lever job boards
 ```
+
+First run output:
+```text
+Step 1 - loading UI anchors from registry...
+  source      : llm_learned        ← page learned, costs tokens once
+  tokens_used : 1842
+  elapsed     : 12300ms
+
+Step 2 - extracting job listings from page...
+  Jobs extracted : 24
+```
+
+Second run (same command):
+```text
+Step 1 - loading UI anchors from registry...
+  source      : registry           ← served from memory
+  tokens_used : 0                  ← 0 tokens
+  elapsed     : 312ms              ← milliseconds, not seconds
+```
+
+---
 
 ## Core API
 
@@ -171,401 +94,196 @@ from agentatlas import Atlas
 
 atlas = Atlas()
 
+# Get or learn a page schema
 schema = await atlas.get_schema(
-    site="greenhouse.io",
+    site="boards.greenhouse.io",
     url="https://boards.greenhouse.io/anthropic",
 )
+print(schema.source)       # "registry" or "llm_learned"
+print(schema.tokens_used)  # 0 on warm hits
 
-playbook = await atlas.get_playbook(
-    site="greenhouse.io",
-    url="https://boards.greenhouse.io/anthropic",
-)
-
+# Validate that stored locators still work on the live page
 report = await atlas.validate(
-    site="greenhouse.io",
+    site="boards.greenhouse.io",
     url="https://boards.greenhouse.io/anthropic",
 )
+print(report.status)  # "healthy" | "degraded" | "stale" | "failed"
 
+# Resolve a single element locator
 locator = await atlas.resolve_locator(
-    site="greenhouse.io",
+    site="boards.greenhouse.io",
     url="https://boards.greenhouse.io/anthropic",
     element_name="job_title",
 )
-```
 
-## Job listing extraction example
-
-This is the simplest real workload where AgentAtlas starts paying for itself quickly:
-
-```python
-import asyncio
-
-from agentatlas import Atlas
-
-
-async def main():
-    atlas = Atlas()
-    url = "https://boards.greenhouse.io/anthropic"
-
-    schema = await atlas.get_schema(site="boards.greenhouse.io", url=url)
-    print("schema source:", schema.source)
-    print("tokens:", schema.tokens_used)
-    print("anchors:", sorted((schema.elements or {}).keys()))
-
-    # After the page is known, use deterministic DOM selectors for the job rows.
-    # See examples/extract_job_listings.py for the full version.
-
-
-asyncio.run(main())
-```
-
-For a pipeline that revisits the same boards every day, that warm-start plus deterministic extraction path is the whole point.
-
-`Atlas.execute()` is intentionally no longer part of the main product surface. If you still need browser execution for operator workflows or cold-start collection, use [`AgentExecutor`](/Users/bhanuprasadthota/Desktop/AgentAtlas/agentatlas/executor.py:1) explicitly.
-
-## Returned signals
-
-- `schema.elements`: normalized locator map for a route
-- `playbook.validation_count`: how many validation runs have been recorded
-- `playbook.success_rate`: last stored locator health signal
-- `playbook.schema_version`: current locator-set version for the route/task variant
-- `playbook.fingerprint`: active route fingerprint used for drift detection
-- `playbook.trust_score`: evidence-based trust score used for ranking
-- `playbook.quality_status`: `candidate`, `verified`, `trusted`, or `quarantined`
-- `playbook.serveable`: whether the playbook can currently be served for reuse
-- `playbook.registry_scope`: `public` or `private`
-- `playbook.review_status`: review/promotion state for high-value public domains
-- `report.locator_results`: per-locator validation details
-- `report.status`: `healthy`, `degraded`, `stale`, or `failed`
-
-## Environment variables
-
-```bash
-SUPABASE_URL=your_supabase_url
-SUPABASE_SERVICE_ROLE_KEY=your_key
-OPENAI_API_KEY=your_key
-AGENTATLAS_API_KEY=optional_shared_api_key
-AGENTATLAS_API_KEYS=optional_comma_separated_keys
-AGENTATLAS_TENANT_API_KEYS=optional_semicolon_separated_tenant_key_map
-AGENTATLAS_API_URL=optional_hosted_api_base_url
-AGENTATLAS_TENANT_ID=optional_tenant_id_for_hosted_sdk_mode
-AGENTATLAS_REGISTRY_SCOPE=optional_registry_scope_default
-AGENTATLAS_DEVICE_CLASS=optional_variant_inference_device
-AGENTATLAS_LOCALE=optional_variant_inference_locale
-AGENTATLAS_AUTH_STATE=optional_variant_inference_auth_state
-AGENTATLAS_REGION=optional_variant_inference_region
-AGENTATLAS_DOMAIN_CLASS_POLICIES=optional_domain_class_review_policy_map
-AGENTATLAS_REVIEWER_ROLES=optional_reviewer_role_map
-```
-
-If `AGENTATLAS_API_URL` is set in the SDK, `Atlas.get_schema()`, `Atlas.get_playbook()`, `Atlas.resolve_locator()`, `Atlas.validate()`, and `Atlas.record_outcome()` can use the hosted API instead of direct Supabase/OpenAI access.
-Hosted mode also supports review/admin methods:
-
-- `Atlas.list_review_queue()`
-- `Atlas.list_review_audit()`
-- `Atlas.promote_playbook()`
-- `Atlas.get_route_scope_diff()`
-
-Minimal hosted API smoke test:
-
-```bash
-curl -X POST http://127.0.0.1:8000/v1/schema/resolve \
-  -H "Content-Type: application/json" \
-  -H "X-API-Key: single-shared-key" \
-  -d '{"site":"boards.greenhouse.io","url":"https://boards.greenhouse.io/anthropic"}'
-```
-
-## Registry scopes
-
-AgentAtlas now supports explicit memory scopes:
-
-- `public`: shared memory reusable across tenants
-- `private`: tenant-isolated memory
-- `auto`: private-first, public-fallback lookup
-
-Private writes require a tenant id. High-value domains learned into the public registry are held for review before they become serveable.
-
-When both private and public memory exist for the same route, AgentAtlas now resolves conflicts explicitly:
-
-- `auto` mode prefers private memory by default
-- if private and public fingerprints disagree, stronger validated public memory can win
-- weak private memory no longer automatically overrides trustworthy public memory
-
-## Variant inference
-
-You no longer need to handcraft `variant_key` for every call. The SDK infers a variant from environment context using:
-
-- `AGENTATLAS_DEVICE_CLASS`
-- `AGENTATLAS_LOCALE`
-- `AGENTATLAS_AUTH_STATE`
-- `AGENTATLAS_REGION`
-
-Example inferred key:
-
-```text
-mobile_enUS_loggedin_us
-```
-
-You can still override `variant_key` explicitly when needed.
-
-## Approval policy
-
-Public memory approval is now driven by domain class policy, not a fixed hardcoded allowlist.
-
-Default classes:
-
-- `social_auth`
-- `job_board`
-- `commerce`
-- `docs`
-- `general`
-
-Default policy map:
-
-```text
-social_auth:review_required;job_board:review_required;commerce:review_required;docs:auto_approve;general:auto_approve
-```
-
-Override it with `AGENTATLAS_DOMAIN_CLASS_POLICIES`.
-
-Reviewer access for promotion/rejection can be controlled with:
-
-```text
-AGENTATLAS_REVIEWER_ROLES=ops@agentatlas.ai:admin;qa@agentatlas.ai:reviewer;viewer@agentatlas.ai:viewer
-```
-
-## Supabase schema
-
-Apply the migration in [`supabase/migrations/20260307_create_validation_runs.sql`](/Users/bhanuprasadthota/Desktop/AgentAtlas/supabase/migrations/20260307_create_validation_runs.sql) to store validation history in `validation_runs`. The `playbooks.payload.validation` field remains a cached latest summary, but validation events now belong in a dedicated table. Locator sets are versioned by route fingerprint, and a validation fingerprint mismatch will mark the active playbook as `stale` so it stops serving automatically.
-
-Apply [`supabase/migrations/20260307_create_benchmark_runs.sql`](/Users/bhanuprasadthota/Desktop/AgentAtlas/supabase/migrations/20260307_create_benchmark_runs.sql) to persist benchmark suite history in `benchmark_runs`.
-
-Apply [`supabase/migrations/20260307_create_review_events.sql`](/Users/bhanuprasadthota/Desktop/AgentAtlas/supabase/migrations/20260307_create_review_events.sql) to persist durable review audit history in `review_events`. If that table is absent, AgentAtlas falls back to the payload audit trail stored on each playbook.
-
-## Integration benchmarks
-
-[`test_execute.py`](/Users/bhanuprasadthota/Desktop/AgentAtlas/test_execute.py) is now an opt-in integration harness for warm-start reliability, not a top-level demo script. It benchmarks repeated `get_schema()` calls plus `validate()` across public workflows and reports:
-
-- first lookup source and token use
-- second lookup warm-start registry hit behavior
-- locator count
-- validation status
-- fingerprint match and schema version
-- workflow category so regressions can be grouped by auth walls, delayed hydration, repeated labels, and dynamic forms
-
-Run the benchmark suite directly:
-
-```bash
-AGENTATLAS_RUN_INTEGRATION=1 python3 test_execute.py
-```
-
-Run it through `pytest` only when you want live integration coverage:
-
-```bash
-AGENTATLAS_RUN_INTEGRATION=1 pytest -q test_execute.py
-```
-
-Optional:
-
-- set `AGENTATLAS_BENCHMARK_OUTPUT=/path/to/results.json` to persist the benchmark output
-- benchmark output now includes `validation_message` and `failed_locators` so degraded runs are actionable
-- validation uses automatic relearning on `degraded` and `stale` results before returning the final benchmark status
-- successful runs are also stored in Supabase `benchmark_runs` when the table exists
-- compare the latest two runs with `python3 compare_benchmark_runs.py`; exit code `2` indicates a regression
-
-## Scheduled revalidation
-
-Use the registry revalidation cycle to refresh stale, degraded, or aged playbooks before customers hit them:
-
-```bash
-python3 run_revalidation_cycle.py
-```
-
-Optional environment variables:
-
-- `AGENTATLAS_REVALIDATION_MAX_AGE_HOURS`
-- `AGENTATLAS_REVALIDATION_LIMIT`
-- `AGENTATLAS_REVALIDATION_HEADLESS`
-
-## Hosted API
-
-The first hosted API surface now exists in [`agentatlas/api.py`](/Users/bhanuprasadthota/Desktop/AgentAtlas/agentatlas/api.py:1). Core endpoints:
-
-- `GET /admin`
-- `GET /health`
-- `POST /v1/schema/resolve`
-- `POST /v1/locator/resolve`
-- `POST /v1/validate`
-- `POST /v1/outcome`
-- `GET /v1/benchmarks/runs`
-- `GET /v1/benchmarks/compare`
-- `GET /v1/benchmarks/dashboard`
-- `GET /v1/review/queue`
-- `GET /v1/review/dashboard`
-- `GET /v1/review/audit`
-- `POST /v1/review/promote`
-- `POST /v1/review/flag`
-- `POST /v1/review/diff`
-
-Run it locally with:
-
-```bash
-uvicorn agentatlas.api:app --reload
-```
-
-Protect the hosted API with an API key by setting either:
-
-```bash
-AGENTATLAS_API_KEY=single-shared-key
-```
-
-or:
-
-```bash
-AGENTATLAS_API_KEYS=key-one,key-two,key-three
-```
-
-For tenant-scoped keys, prefer:
-
-```bash
-AGENTATLAS_TENANT_API_KEYS=tenant-a:key-a|key-a-2;tenant-b:key-b
-```
-
-In that mode, clients must send both `X-Tenant-ID` and `X-API-Key`.
-
-Then call protected endpoints with:
-
-```bash
-curl -X POST http://127.0.0.1:8000/v1/schema/resolve \
-  -H "Content-Type: application/json" \
-  -H "X-API-Key: single-shared-key" \
-  -d '{"site":"httpbin.org","url":"https://httpbin.org/forms/post"}'
-```
-
-Use the hosted client mode in Python with:
-
-```python
-from agentatlas import Atlas
-
-atlas = Atlas(
-    api_url="https://your-agentatlas-api.example.com",
-    api_key="single-shared-key",
-    tenant_id="tenant-a",
-    use_api=True,
-    registry_scope="auto",
-)
-
-schema = await atlas.get_schema(
-    site="httpbin.org",
-    url="https://httpbin.org/forms/post",
-)
-
-report = await atlas.validate(
-    site="httpbin.org",
-    url="https://httpbin.org/forms/post",
-)
-
-locator = await atlas.resolve_locator(
-    site="httpbin.org",
-    url="https://httpbin.org/forms/post",
-    element_name="customer_name",
-)
-
-recorded = await atlas.record_outcome(
-    site="httpbin.org",
-    url="https://httpbin.org/forms/post",
+# Record execution outcome for telemetry
+await atlas.record_outcome(
+    site="boards.greenhouse.io",
+    url="https://boards.greenhouse.io/anthropic",
     status="success",
 )
 ```
 
-Direct-mode review operations:
+---
 
-```python
-queue = await atlas.list_review_queue(limit=20)
-dashboard = await atlas.get_review_dashboard()
-await atlas.flag_schema(
-    site="github.com",
-    url="https://github.com/login",
-    reporter="qa@agentatlas.ai",
-    reason="bad_selector",
-    notes="Submit button points to the wrong control",
-)
-await atlas.promote_playbook(playbook_id="...", reviewer="ops@agentatlas.ai", approved=True, notes="Verified selectors")
+## Supported verticals
+
+| Vertical | Example | Category |
+|----------|---------|----------|
+| Job boards (Greenhouse) | `extract_job_listings.py` | `job_board` |
+| Job boards (Lever) | `extract_lever_jobs.py` | `job_board` |
+| E-commerce catalogs | `extract_product_cards.py` | `repeated_labels` |
+| News / encyclopedia | `extract_wikipedia.py` | `content_page` |
+| Link aggregators | `extract_hn_posts.py` | `minimal_static` |
+| Auth walls | benchmark workflow | `auth_wall` |
+| JS-rendered pages | benchmark workflow | `delayed_hydration` |
+
+---
+
+## Hosted API
+
+Run AgentAtlas as a shared service so multiple agents and teams can hit the same registry without each needing Supabase credentials.
+
+**Deploy in 10 minutes → [deploy/render-setup.md](deploy/render-setup.md)**
+
+Once deployed:
+```bash
+export AGENTATLAS_API_URL=https://your-agentatlas-api.onrender.com
+export AGENTATLAS_API_KEY=your-key
+
+python3 examples/extract_job_listings_hosted_api.py
 ```
 
-Review queue items now include:
+Or in Python:
+```python
+atlas = Atlas(
+    api_url="https://your-agentatlas-api.onrender.com",
+    api_key="your-key",
+    tenant_id="my-team",
+    use_api=True,
+)
+schema = await atlas.get_schema(site="example.com", url="https://example.com/")
+```
 
-- `pending_age_hours`
-- `overdue`
-- `flag_count`
+API endpoints:
 
-If a public schema exists but is held for review, callers now receive:
+| Endpoint | Purpose |
+|----------|---------|
+| `GET /health` | Health check |
+| `POST /v1/schema/resolve` | Get or learn a page schema |
+| `POST /v1/locator/resolve` | Resolve a single element |
+| `POST /v1/validate` | Validate locator health |
+| `POST /v1/outcome` | Record execution telemetry |
+| `GET /v1/benchmarks/dashboard` | Benchmark trends by category |
+| `GET /v1/review/queue` | Review queue for public schemas |
+| `GET /admin` | Admin UI |
 
-- `status="pending_review"`
-- `source="review_queue"`
+---
 
-That gives downstream agents an explicit fallback state instead of an ambiguous miss.
-
-Tenant-scoped benchmark dashboards are available through the API and registry history layer. Benchmark runs now persist tenant metadata so reliability trends can be viewed per tenant instead of only globally.
-
-The lightweight admin UI is served from `/admin` and uses the same authenticated API surface for:
-
-- benchmark dashboard by tenant
-- review queue management
-- audit trail visibility
-- private/public route diff inspection
-
-## Deployment
-
-The repo now includes:
-
-- [`Dockerfile`](/Users/bhanuprasadthota/Desktop/AgentAtlas/Dockerfile) for container deployment
-- [`render.yaml`](/Users/bhanuprasadthota/Desktop/AgentAtlas/render.yaml) for quick Render deployment
-- [`fly.toml`](/Users/bhanuprasadthota/Desktop/AgentAtlas/fly.toml) for Fly.io deployment
-- [`railway.json`](/Users/bhanuprasadthota/Desktop/AgentAtlas/railway.json) for Railway deployment
-- [`deploy/ecs-task-definition.json`](/Users/bhanuprasadthota/Desktop/AgentAtlas/deploy/ecs-task-definition.json) as an ECS/Fargate starting point
-
-Minimal centralized deployment flow:
+## Environment variables
 
 ```bash
-docker build -t agentatlas-api .
-docker run -p 8000:8000 \
-  -e SUPABASE_URL=your_supabase_url \
-  -e SUPABASE_SERVICE_ROLE_KEY=your_key \
-  -e OPENAI_API_KEY=your_key \
-  -e AGENTATLAS_API_KEY=single-shared-key \
-  agentatlas-api
+# Required (direct mode)
+SUPABASE_URL=your_supabase_url
+SUPABASE_SERVICE_ROLE_KEY=your_key
+OPENAI_API_KEY=your_key
+
+# Required (hosted API mode)
+AGENTATLAS_API_URL=https://your-api.onrender.com
+AGENTATLAS_API_KEY=your_key
+
+# Optional
+AGENTATLAS_TENANT_ID=my-tenant
+AGENTATLAS_REGISTRY_SCOPE=auto          # auto | public | private
+AGENTATLAS_DEVICE_CLASS=desktop         # variant inference
+AGENTATLAS_LOCALE=enUS
+AGENTATLAS_AUTH_STATE=anonymous
+AGENTATLAS_REGION=us
+AGENTATLAS_DOMAIN_CLASS_POLICIES=job_board:review_required;docs:auto_approve
 ```
 
-For a real central service, deploy the container to Render, Railway, Fly.io, ECS, or another container platform and point SDK users at the shared base URL via `AGENTATLAS_API_URL`.
+---
 
-Platform notes:
+## Database setup
 
-- Render: `render.yaml` plus env vars in the dashboard; custom domains and TLS are managed by Render
-- Fly.io: `fly launch --copy-config --ha=false`, then `fly secrets set ...`; TLS is automatic on the Fly hostname and custom domains can be added with certificates
-- Railway: connect the repo or Docker image, set env vars, and Railway terminates TLS on the assigned or custom domain
-- ECS/Fargate: use the task definition with an ALB in front, then attach ACM certificates to the HTTPS listener for TLS
+Apply the combined migration to your Supabase project (SQL Editor → paste → run):
+
+```bash
+# All three tables in one file
+supabase/setup.sql
+```
+
+Or apply individually:
+```
+supabase/migrations/20260307_create_validation_runs.sql
+supabase/migrations/20260307_create_benchmark_runs.sql
+supabase/migrations/20260307_create_review_events.sql
+```
+
+---
+
+## Registry scopes
+
+| Scope | Behavior |
+|-------|----------|
+| `public` | Shared memory across all tenants |
+| `private` | Isolated to your tenant |
+| `auto` | Private-first, public-fallback (default) |
+
+High-value public domains (job boards, social auth) require review before becoming serveable. Use `registry_scope="private"` to skip the review queue during development.
+
+---
+
+## Module layout
+
+| Module | Purpose |
+|--------|---------|
+| `agentatlas/atlas.py` | Main facade — direct and hosted API dispatch |
+| `agentatlas/client.py` | Hosted API HTTP client with retries |
+| `agentatlas/browser_runtime.py` | Playwright learning, validation, execution |
+| `agentatlas/registry.py` | Playbook persistence and route lookup |
+| `agentatlas/registry_quality.py` | Trust scoring, scope conflict resolution |
+| `agentatlas/registry_review.py` | Review queue, audit trail, promotion |
+| `agentatlas/registry_benchmarks.py` | Benchmark history and revalidation |
+| `agentatlas/api.py` | FastAPI hosted API server |
+
+---
+
+## Running benchmarks
+
+```bash
+AGENTATLAS_RUN_INTEGRATION=1 python3 test_execute.py
+
+# Compare latest two runs (exit code 2 = regression)
+python3 compare_benchmark_runs.py
+```
+
+Benchmarks run automatically every Monday via [GitHub Actions](.github/workflows/benchmark.yml) and results are committed to `benchmarks/`. See [BENCHMARKS.md](BENCHMARKS.md) for the full methodology.
+
+---
 
 ## Operations
 
-Backfill fingerprints for legacy active playbooks that were learned before fingerprint versioning was introduced:
-
 ```bash
+# Refresh stale or degraded playbooks proactively
+python3 run_revalidation_cycle.py
+
+# Backfill fingerprints for pre-fingerprinting playbooks
 python3 backfill_fingerprints.py
 ```
 
-Optional:
-
-- set `AGENTATLAS_BACKFILL_LIMIT=250` to control batch size
+---
 
 ## Strategic value
 
-AgentAtlas is intended to become shared infrastructure for web automation systems:
+AgentAtlas is intended to become shared infrastructure for web automation:
 
-- Less repeated LLM perception across the same sites
-- Faster warm-start browser tasks
-- Reusable locator memory across users, agents, and teams
-- A growing validation graph for freshness and trust
+- **Less repeated LLM perception** across the same sites and routes
+- **Faster warm-start browser tasks** — registry hits in milliseconds, not seconds
+- **Shared memory across agents and teams** — one team's cold start benefits everyone
+- **Growing validation graph** for freshness, trust, and drift detection
+
+---
 
 ## License
 

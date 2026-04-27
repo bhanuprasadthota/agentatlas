@@ -101,6 +101,49 @@ BENCHMARK_WORKFLOWS = [
         notes="Client-rendered route that exercises delayed hydration and JS rendering.",
         category="delayed_hydration",
     ),
+    # --- Extended verticals ---
+    BenchmarkWorkflow(
+        name="wikipedia_article",
+        site="en.wikipedia.org",
+        url="https://en.wikipedia.org/wiki/Python_(programming_language)",
+        notes="Dense long-form content page with stable heading/section structure.",
+        category="content_page",
+    ),
+    BenchmarkWorkflow(
+        name="hn_frontpage",
+        site="news.ycombinator.com",
+        url="https://news.ycombinator.com/",
+        notes="Minimal server-rendered listing page; near-zero JS, very stable HTML.",
+        category="repeated_labels",
+    ),
+    BenchmarkWorkflow(
+        name="lever_jobs",
+        site="jobs.lever.co",
+        url="https://jobs.lever.co/vercel",
+        notes="Lever job board; parallel to Greenhouse vertical for ATS diversity.",
+        category="job_board",
+    ),
+    BenchmarkWorkflow(
+        name="arxiv_abstract",
+        site="arxiv.org",
+        url="https://arxiv.org/abs/2303.08774",
+        notes="Academic abstract page with structured metadata — stable doi/title/author layout.",
+        category="content_page",
+    ),
+    BenchmarkWorkflow(
+        name="pypi_package",
+        site="pypi.org",
+        url="https://pypi.org/project/requests/",
+        notes="Package registry detail page with version table, metadata sidebar, and install command.",
+        category="content_page",
+    ),
+    BenchmarkWorkflow(
+        name="reddit_search",
+        site="www.reddit.com",
+        url="https://www.reddit.com/search/?q=browser+automation&type=link",
+        notes="JS-rendered search results page; tests delayed hydration and repeated post cards.",
+        category="delayed_hydration",
+    ),
 ]
 
 
