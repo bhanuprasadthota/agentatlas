@@ -161,26 +161,29 @@ def create_app() -> FastAPI:
         atlas: Atlas = Depends(get_atlas),
         auth: dict[str, str | None] = Depends(require_api_key),
     ) -> dict[str, Any]:
-        schema = await atlas.get_schema(
-            site=request.site,
-            url=request.url,
-            variant_key=request.variant_key,
-            tenant_id=auth.get("tenant_id"),
-            registry_scope=request.registry_scope,
-            max_learn_seconds=request.max_learn_seconds,
-        )
-        playbook = await atlas.get_playbook(
-            site=request.site,
-            url=request.url,
-            task_key=request.task_key,
-            variant_key=request.variant_key,
-            tenant_id=auth.get("tenant_id"),
-            registry_scope=request.registry_scope,
-        )
-        return {
-            "schema": serialize_dataclass(schema),
-            "playbook": serialize_dataclass(playbook) if playbook else None,
-        }
+        try:
+            schema = await atlas.get_schema(
+                site=request.site,
+                url=request.url,
+                variant_key=request.variant_key,
+                tenant_id=auth.get("tenant_id"),
+                registry_scope=request.registry_scope,
+                max_learn_seconds=request.max_learn_seconds,
+            )
+            playbook = await atlas.get_playbook(
+                site=request.site,
+                url=request.url,
+                task_key=request.task_key,
+                variant_key=request.variant_key,
+                tenant_id=auth.get("tenant_id"),
+                registry_scope=request.registry_scope,
+            )
+            return {
+                "schema": serialize_dataclass(schema),
+                "playbook": serialize_dataclass(playbook) if playbook else None,
+            }
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}") from exc
 
     @app.post("/v1/locator/resolve")
     async def resolve_locator(
