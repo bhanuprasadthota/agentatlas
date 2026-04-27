@@ -4,15 +4,26 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agentatlas"
-version = "0.4.0"
+version = "0.4.1"
 description = "Shared browser interaction schema registry for AI agents. Reduces LLM token usage by 80-100% on known sites."
 readme = "README.md"
-license = {text = "MIT"}
+license = "MIT"
 requires-python = ">=3.10"
-keywords = ["ai", "agents", "browser-automation", "llm", "playwright"]
+keywords = ["ai", "agents", "browser-automation", "llm", "playwright", "token-optimization", "web-scraping", "schema-registry"]
+authors = [
+    {name = "Bhanu Prasad Thota", email = "thotabhanuprasad2708@gmail.com"}
+]
 classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
     "Operating System :: OS Independent",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Internet :: WWW/HTTP :: Browsers",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dependencies = [
     "supabase>=2.6.0",
@@ -26,7 +37,10 @@ dependencies = [
 
 [project.urls]
 Homepage = "https://github.com/bhanuprasadthota/agentatlas"
+Repository = "https://github.com/bhanuprasadthota/agentatlas"
 Issues = "https://github.com/bhanuprasadthota/agentatlas/issues"
+Changelog = "https://github.com/bhanuprasadthota/agentatlas/blob/main/CHANGELOG.md"
+"Benchmark Results" = "https://github.com/bhanuprasadthota/agentatlas/blob/main/benchmarks/RESULTS.md"
 
 [tool.setuptools.packages.find]
 where = ["."]
