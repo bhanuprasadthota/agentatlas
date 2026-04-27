@@ -144,25 +144,31 @@ await atlas.record_outcome(
 
 Run AgentAtlas as a shared service so multiple agents and teams can hit the same registry without each needing Supabase credentials.
 
-**Deploy in 10 minutes → [deploy/render-setup.md](deploy/render-setup.md)**
+**Live API: `https://agentatlas-8qp0.onrender.com`**
 
-Once deployed:
+**Deploy your own in 10 minutes → [deploy/render-setup.md](deploy/render-setup.md)**
+
+Quick test against the live API:
 ```bash
-export AGENTATLAS_API_URL=https://your-agentatlas-api.onrender.com
-export AGENTATLAS_API_KEY=your-key
-
-python3 examples/extract_job_listings_hosted_api.py
+curl -s -X POST https://agentatlas-8qp0.onrender.com/v1/schema/resolve \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: your-key" \
+  -d '{"site":"example.com","url":"https://example.com/","registry_scope":"auto"}'
+# Returns: {"schema": {"source": "registry", "tokens_used": 0, ...}}
 ```
 
 Or in Python:
 ```python
 atlas = Atlas(
-    api_url="https://your-agentatlas-api.onrender.com",
+    api_url="https://agentatlas-8qp0.onrender.com",
     api_key="your-key",
     tenant_id="my-team",
     use_api=True,
+    registry_scope="auto",
 )
 schema = await atlas.get_schema(site="example.com", url="https://example.com/")
+print(schema.source)       # "registry"
+print(schema.tokens_used)  # 0
 ```
 
 API endpoints:
